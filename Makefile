@@ -1,20 +1,19 @@
 # THE CLUSTER IS NOT CREATED FROM HERE. Its lifecycle belongs to the nix repo
-# (modules/nixos/k3d.nix, systemd unit k3d-yadgar-cluster), which owns the
-# machine, the container runtime and the cluster itself. This repo owns only
-# what runs INSIDE the cluster.
+# (modules/nixos/kind.nix), which owns the machine and the cluster itself. This
+# repo owns only what runs INSIDE the cluster.
 #
-# One writer, deliberately. A `k3d cluster create` from here plus a systemd unit
-# that also creates it are two writers of one resource, and the failure mode is
-# not an error but a half-built cluster — which is exactly how the first attempt
-# left a load balancer crash-looping on a config file k3d had not finished
-# writing.
+# One writer, deliberately. A cluster created from here plus a nix-managed one
+# are two writers of a single resource, and the failure mode is not an error but
+# a half-built cluster — which is exactly what the earlier k3d attempt produced,
+# a load balancer crash-looping on a config file that had not finished being
+# written.
 #
-#   check the unit:  systemctl status k3d-yadgar-cluster
-#   full reset:      k3d cluster delete yadgar
-#                    sudo systemctl restart k3d-yadgar-cluster
+#   kubectl get nodes               # yadgar-control-plane, yadgar-worker, worker2
+#   kubectl config current-context  # kind-yadgar
 #
-# DOCKER_HOST stays unset: k3d's default /var/run/docker.sock resolves through
-# the podman docker-compat symlink to rootful podman.
+# kind with the podman provider, on the existing ROOTLESS podman session. No
+# DOCKER_HOST, no docker socket, no rootful bridge — see README for why k3d was
+# abandoned.
 SHELL := /bin/bash
 ARGOCD_CHART_VERSION := 8.6.1
 
@@ -35,14 +34,14 @@ bootstrap: ## Install Argo CD into the running cluster, then hand control to git
 	kubectl apply -f infra/apps.yaml
 
 status:
-	@systemctl is-active k3d-yadgar-cluster >/dev/null 2>&1 \
-		&& echo "cluster unit: active" || echo "cluster unit: NOT active"
+	@kubectl config current-context 2>/dev/null | grep -q kind-yadgar \
+		&& echo "context: kind-yadgar" || echo "context: NOT kind-yadgar"
 	@kubectl get applications -n argocd 2>/dev/null || echo "argocd not installed yet"
 	@echo "--- nodes ---"; kubectl get nodes -o wide 2>/dev/null || echo "cluster unreachable"
 
 ## No argocd CLI anywhere in this file, deliberately. The Argo server runs in
 ## the cluster; the CLI is an optional client and kubectl on the CRDs does the
-## same job. helm and kubectl are the whole toolchain here — k3d is needed only
+## same job. helm and kubectl are the whole toolchain here — kind is needed only
 ## by the nix unit that creates the cluster.
 
 ui: ## http://localhost:8081 — admin / `make password`

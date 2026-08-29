@@ -1,7 +1,7 @@
 # deploy — the substrate
 
-The cluster and everything that runs under the services: the k3d definition, and
-the infrastructure Argo CD keeps in sync.
+The infrastructure Argo CD keeps in sync, and the Argo bootstrap. **Not the
+cluster** — see below.
 
 Argo CD's own configuration lives in
 [`yadgarhq/argocd`](https://github.com/yadgarhq/argocd). Decisions are recorded in
@@ -10,46 +10,73 @@ D55 (development environment), D58 (databases).
 
 ## Toolchain
 
-`helm` and `kubectl`. `k3d` is needed only by the nix unit that creates the
-cluster, not by anything in this repo. That is all — there is no `argocd` CLI dependency
-anywhere in the Makefile. The Argo server runs in the cluster and `kubectl` on
-its CRDs does the same job.
-
-Nix: `pkgs.k3d`.
+`helm` and `kubectl`. That is all. `kind` is needed only by the nix unit that
+creates the cluster, and there is no `argocd` CLI dependency anywhere here — the
+Argo server runs in the cluster and `kubectl` on its CRDs does the same job.
 
 ## The cluster is not created from this repo
 
-Its lifecycle belongs to the **nix repo** — `modules/nixos/k3d.nix`, systemd unit
-`k3d-yadgar-cluster`, which is idempotent and runs as `max` with the `podman`
-group so the kubeconfig lands somewhere usable. This repo owns only what runs
-**inside** the cluster.
+Its lifecycle belongs to the **nix repo** — `modules/nixos/kind.nix`, with the
+cluster definition inline there rather than in a file this repo owns. This repo
+owns only what runs **inside** the cluster.
 
-**One writer, and that is the point.** A `k3d cluster create` from here plus a
-systemd unit that also creates it are two writers of one resource, and the
-failure mode is not an error but a half-built cluster: the first attempt left a
-load balancer crash-looping on `stat /etc/confd/values.yaml: no such file or
-directory`, because a `systemctl restart podman.socket` landed between the
-container being created and k3d writing its config into it. Port 6443 was then
-unreachable and `kubectl` could not talk to the cluster at all.
+**One writer, and that is the point.** A cluster created from here plus a
+nix-managed one are two writers of a single resource, and the failure mode is not
+an error but a half-built cluster. That already happened once during the k3d
+attempt: a `systemctl restart podman.socket` landed between the load balancer
+container being created and its config being written, leaving it crash-looping on
+`stat /etc/confd/values.yaml: no such file or directory` with port 6443
+unreachable, so `kubectl` could not reach the cluster at all.
 
 ```bash
-systemctl status k3d-yadgar-cluster          # is it up
-k3d cluster delete yadgar && \
-  sudo systemctl restart k3d-yadgar-cluster  # full reset
+kubectl get nodes                 # yadgar-control-plane, yadgar-worker, yadgar-worker2
+kubectl config current-context    # kind-yadgar
 ```
 
-`DOCKER_HOST` stays **unset**: k3d's default `/var/run/docker.sock` resolves
-through the podman docker-compat symlink to rootful podman.
+## What it is
 
-**A fresh login is required after first setup.** Group membership applies at
-login, so a shell started before `max` joined `podman` gets
-`connect: permission denied` on the socket even though the group is correct on
-disk. `sg podman -c '...'` bridges an existing session; re-login is the fix.
+**kind with the podman provider** (`KIND_EXPERIMENTAL_PROVIDER=podman`), running
+on the existing **rootless** podman session.
 
-**No managed registry, and there is no fix for it** — only avoidance. k3d
-attaches a managed registry's node to a network literally named `bridge`, which
-podman refuses to create because `bridge` is a reserved network *mode* name.
-Image delivery is `k3d image import`.
+| | |
+|---|---|
+| Kubernetes | **v1.36.1, upstream** — kubeadm, containerd 2.3.1. Not k3s. |
+| Nodes | `yadgar-control-plane`, `yadgar-worker`, `yadgar-worker2` |
+| Ports | 18080→80, 18443→443, on the control-plane node (kind has no separate load balancer node) |
+| kubeconfig | `~/.kube/config`, written directly as `max`. No copy or chown. |
+| Ingress | **none bundled.** kind ships no ingress controller, so Argo CD's ingress story is a clean slate. |
+
+**Three nodes, deliberately.** A single-node cluster schedules every replica onto
+one kubelet, which reproduces the single-process blind spot D55 exists to
+remove — D18's cache coherence, D23's client-side balancing and D47's atomic
+claim are all multi-replica behaviours.
+
+## Image delivery
+
+```bash
+kind load docker-image <image> --name yadgar
+```
+
+There is no in-cluster registry, by choice. D55's dev loop — one module's tag
+overridden while everything else stays GitOps — works the same either way.
+
+## Why not k3d
+
+Recorded because it cost a day and the failure is not obvious.
+
+k3d on this host died in two stages. First, its tools node hardcodes a bind mount
+of `/var/run/docker.sock`, which rootless podman has not got and cannot create.
+Pointing k3d at a *rootful* podman socket cleared that — and was **necessary but
+not sufficient**. Underneath sat a rootful-podman bridge networking failure:
+agents could never register, because containers on that bridge could not reach
+even their own gateway (100% packet loss to `10.89.0.1` from inside a node, while
+the host queried it fine). That is below the firewall layer and was not worth
+digging further.
+
+kind shells out to `podman` directly and uses the existing rootless session, so
+none of that class of problem exists — no docker socket, no rootful bridge, no
+network that has to be named `bridge`. Full detail in the yadgar wiki,
+`k3d-rootless-podman-blockers`.
 
 ## Bootstrap
 
@@ -57,8 +84,8 @@ Image delivery is `k3d image import`.
 make bootstrap   # Argo CD into the running cluster, then git owns everything
 ```
 
-Argo CD is installed once by hand because a GitOps controller cannot arrive by
-GitOps. Everything after that is `git push`.
+Argo CD is installed by hand exactly once, because a GitOps controller cannot
+arrive by GitOps. Everything after that is `git push`.
 
 ## What is here
 
@@ -78,7 +105,7 @@ GitOps. Everything after that is `git push`.
 | -10 | operators, cache, broker |
 | 10 | module services, via the ApplicationSet |
 
-Ordering is what the umbrella chart would have given for free, and paying for it
+Ordering is what an umbrella chart would have given for free, and paying for it
 here is the accepted cost of D54.
 
 ## Known risk
