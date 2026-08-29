@@ -10,67 +10,60 @@ D55 (development environment), D58 (databases).
 
 ## Toolchain
 
-`k3d`, `helm`, `kubectl`. That is all — there is no `argocd` CLI dependency
+`helm` and `kubectl`. `k3d` is needed only by the nix unit that creates the
+cluster, not by anything in this repo. That is all — there is no `argocd` CLI dependency
 anywhere in the Makefile. The Argo server runs in the cluster and `kubectl` on
 its CRDs does the same job.
 
 Nix: `pkgs.k3d`.
 
-## Blocked on the container runtime (2026-08-29)
+## The cluster is not created from this repo
 
-`make up` does not currently complete on this machine. Recorded here rather than
-in a commit message, because the next person to try it will hit it in the first
-minute.
+Its lifecycle belongs to the **nix repo** — `modules/nixos/k3d.nix`, systemd unit
+`k3d-yadgar-cluster`, which is idempotent and runs as `max` with the `podman`
+group so the kubeconfig lands somewhere usable. This repo owns only what runs
+**inside** the cluster.
 
-**k3d's tools node hardcodes a bind mount of `/var/run/docker.sock`**, which
-rootless podman has neither got nor can create:
+**One writer, and that is the point.** A `k3d cluster create` from here plus a
+systemd unit that also creates it are two writers of one resource, and the
+failure mode is not an error but a half-built cluster: the first attempt left a
+load balancer crash-looping on `stat /etc/confd/values.yaml: no such file or
+directory`, because a `systemctl restart podman.socket` landed between the
+container being created and k3d writing its config into it. Port 6443 was then
+unreachable and `kubectl` could not talk to the cluster at all.
 
+```bash
+systemctl status k3d-yadgar-cluster          # is it up
+k3d cluster delete yadgar && \
+  sudo systemctl restart k3d-yadgar-cluster  # full reset
 ```
-failed to create container 'k3d-yadgar-tools': make cli opts():
-  making volume mountpoint for volume /var/run/docker.sock:
-  mkdir /var/run/docker.sock: permission denied
-```
 
-Every cluster node — server, both agents, the load balancer — creates fine.
-Only the tools node fails, and it fails the whole create.
+`DOCKER_HOST` stays **unset**: k3d's default `/var/run/docker.sock` resolves
+through the podman docker-compat symlink to rootful podman.
 
-The declarative fix is tracked in the nix repo. Three candidates:
-`virtualisation.podman.dockerSocket.enable` (rootful podman socket at
-`/run/docker.sock`), real Docker, or **kind**, which supports rootless podman
-natively and which D55 already permits — it says "k3d *or an equivalent local
-k8s*", so a switch would be a choice rather than a workaround.
+**A fresh login is required after first setup.** Group membership applies at
+login, so a shell started before `max` joined `podman` gets
+`connect: permission denied` on the socket even though the group is correct on
+disk. `sg podman -c '...'` bridges an existing session; re-login is the fix.
 
-**A second podman constraint is already worked around**, noted so nobody undoes
-it: k3d attaches its managed registry to a network literally named `bridge`,
-which podman refuses to create because `bridge` is a reserved network *mode*
-name. `registries.create` is therefore absent from the cluster config and image
-delivery is `k3d image import`.
-
-Verified on k3d 5.9.0 / podman 5.8.4, with cgroup v2 and `cpu io memory pids`
-all delegated — the prerequisites are fine, the socket path is not.
+**No managed registry, and there is no fix for it** — only avoidance. k3d
+attaches a managed registry's node to a network literally named `bridge`, which
+podman refuses to create because `bridge` is a reserved network *mode* name.
+Image delivery is `k3d image import`.
 
 ## Bootstrap
 
 ```bash
-make up         # k3d cluster: 1 server, 2 agents  (see blocker above)
-make bootstrap  # install Argo CD, then hand control to git
+make bootstrap   # Argo CD into the running cluster, then git owns everything
 ```
 
-Two phases, and the split is not cosmetic: **a cluster and a GitOps controller
-cannot themselves arrive by GitOps.** Phase 1 is imperative and runs once. Phase
-2 onward is `git push`.
-
-**Two agents, deliberately.** A single-node cluster schedules every replica onto
-one kubelet, which reproduces the single-process blind spot D55 exists to
-remove — D18's cache coherence, D23's client-side balancing and D47's atomic
-claim are all multi-replica behaviours, and proving them across nodes proves
-considerably more than proving them across pods on one node.
+Argo CD is installed once by hand because a GitOps controller cannot arrive by
+GitOps. Everything after that is `git push`.
 
 ## What is here
 
 | Path | |
 |---|---|
-| `k3d/cluster.yaml` | the development cluster |
 | `infra/apps.yaml` | app-of-apps entry point for everything that is not Argo itself |
 | `infra/mariadb-operator.yaml` | per-module database instances, credentials and backups (D58) |
 | `infra/valkey.yaml` | one shared cache, one key namespace per `-db` (D21) |

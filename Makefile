@@ -1,23 +1,28 @@
-# Bootstrap is deliberately two phases. Phase 1 is imperative and run once:
-# a cluster and a GitOps controller cannot themselves arrive by GitOps. Phase 2
-# is everything else, and it arrives the same way production does (D54).
+# THE CLUSTER IS NOT CREATED FROM HERE. Its lifecycle belongs to the nix repo
+# (modules/nixos/k3d.nix, systemd unit k3d-yadgar-cluster), which owns the
+# machine, the container runtime and the cluster itself. This repo owns only
+# what runs INSIDE the cluster.
+#
+# One writer, deliberately. A `k3d cluster create` from here plus a systemd unit
+# that also creates it are two writers of one resource, and the failure mode is
+# not an error but a half-built cluster — which is exactly how the first attempt
+# left a load balancer crash-looping on a config file k3d had not finished
+# writing.
+#
+#   check the unit:  systemctl status k3d-yadgar-cluster
+#   full reset:      k3d cluster delete yadgar
+#                    sudo systemctl restart k3d-yadgar-cluster
+#
+# DOCKER_HOST stays unset: k3d's default /var/run/docker.sock resolves through
+# the podman docker-compat symlink to rootful podman.
 SHELL := /bin/bash
-CLUSTER := yadgar
 ARGOCD_CHART_VERSION := 8.6.1
 
-# k3d speaks the Docker API. On this machine that is podman, so point it at the
-# socket. Rootless works for `cluster list` but NOT for `cluster create` — see
-# the blocker in README.md; the declarative fix is tracked in the nix repo.
-export DOCKER_HOST ?= unix:///run/user/$(shell id -u)/podman/podman.sock
+.PHONY: bootstrap status ui password sync
 
-.PHONY: up down bootstrap status ui password sync clean
-
-## Phase 1 — imperative, once.
-up:
-	k3d cluster create --config k3d/cluster.yaml
-	kubectl wait --for=condition=Ready nodes --all --timeout=180s
-
-bootstrap: ## Install Argo CD, then hand control to git.
+# Argo CD is installed by hand exactly once, because a GitOps controller cannot
+# arrive by GitOps. Everything after this is `git push`.
+bootstrap: ## Install Argo CD into the running cluster, then hand control to git.
 	helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 	helm repo update >/dev/null
 	helm upgrade --install argocd argo/argo-cd \
@@ -29,15 +34,16 @@ bootstrap: ## Install Argo CD, then hand control to git.
 	kubectl apply -f ../argocd/projects/root.yaml
 	kubectl apply -f infra/apps.yaml
 
-## Phase 2 and onward is `git push`.
-
 status:
+	@systemctl is-active k3d-yadgar-cluster >/dev/null 2>&1 \
+		&& echo "cluster unit: active" || echo "cluster unit: NOT active"
 	@kubectl get applications -n argocd 2>/dev/null || echo "argocd not installed yet"
-	@echo "--- nodes ---"; kubectl get nodes -o wide
+	@echo "--- nodes ---"; kubectl get nodes -o wide 2>/dev/null || echo "cluster unreachable"
 
 ## No argocd CLI anywhere in this file, deliberately. The Argo server runs in
 ## the cluster; the CLI is an optional client and kubectl on the CRDs does the
-## same job. k3d, helm and kubectl are the whole toolchain.
+## same job. helm and kubectl are the whole toolchain here — k3d is needed only
+## by the nix unit that creates the cluster.
 
 ui: ## http://localhost:8081 — admin / `make password`
 	kubectl -n argocd port-forward svc/argocd-server 8081:80
@@ -50,9 +56,3 @@ sync: ## Force a refresh without waiting for the reconciliation interval.
 	@test -n "$(APP)" || (echo "usage: make sync APP=<application-name>"; exit 1)
 	kubectl -n argocd annotate application $(APP) \
 		argocd.argoproj.io/refresh=hard --overwrite
-
-down:
-	k3d cluster delete $(CLUSTER)
-
-clean: down
-	k3d registry delete yadgar-registry 2>/dev/null || true
