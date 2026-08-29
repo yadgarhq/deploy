@@ -1,0 +1,27 @@
+# JetStream. Asynchronous work and events ONLY — the write path (D11, D39) and
+# the audit outbox relay (D25). Synchronous reads stay on gRPC: running them
+# over a broker is RPC reimplemented on a message bus, with two hops instead of
+# one, no deadline propagation and degraded tracing (D22).
+#
+# Licence verified Apache-2.0. Residual vendor risk noted in the record: the
+# core maintainers' employer attempted a BUSL relicence in 2025 and the May 2025
+# settlement moved trademarks to the Linux Foundation with the code unchanged.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nats
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://nats-io.github.io/k8s/helm/charts
+    chart: nats
+    targetRevision: 2.14.6
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar-infra
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [CreateNamespace=true]

@@ -1,0 +1,29 @@
+# Provisioning, credentials, backup and restore for the database instances D58
+# requires — one per module, never shared. Nineteen hand-rolled StatefulSets
+# would mean nineteen bespoke backup jobs and restore-verify paths, and backup
+# discipline is contract-enforced under D6 after the 2026-06-16 incident that
+# destroyed 3,622 memories through a faulty restore check.
+#
+# The operator also owns credential creation, which sidesteps the failure D54
+# walks into: a chart generating a password with a `lookup` guard regenerates it
+# on every Argo sync, because `lookup` returns empty under template-only
+# rendering.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mariadb-operator
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://helm.mariadb.com/mariadb-operator
+    chart: mariadb-operator
+    targetRevision: 26.6.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mariadb-system
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

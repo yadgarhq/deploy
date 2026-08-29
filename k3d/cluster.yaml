@@ -1,0 +1,38 @@
+# k3d cluster for development (D55). Development happens here, not in a single
+# process, because D18's cache coherence, D23's client-side load balancing and
+# D47's atomic notice claim are all multi-replica behaviours that a `cargo run`
+# loop cannot exhibit at all.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: yadgar
+
+servers: 1
+# TWO agents, deliberately. One agent would schedule every replica onto the same
+# node, and a single-node cluster reproduces the single-process blind spot this
+# environment exists to remove: client-side balancing across pods that share a
+# kubelet proves much less than balancing across nodes.
+agents: 2
+
+registries:
+  # Local registry so the image loop is push-and-sync rather than rebuild-the-
+  # cluster. D55 puts one module at a time in "dev mode" with its tag overridden.
+  create:
+    name: yadgar-registry
+    host: "0.0.0.0"
+    hostPort: "5001"
+
+ports:
+  - port: 8080:80
+    nodeFilters: [loadbalancer]
+  - port: 8443:443
+    nodeFilters: [loadbalancer]
+
+options:
+  k3s:
+    extraArgs:
+      # Traefik ships with k3s; Argo CD brings its own ingress story and two
+      # controllers fighting over Ingress objects is a debugging tax nobody
+      # needs on day one.
+      - arg: --disable=traefik
+        nodeFilters: [server:*]

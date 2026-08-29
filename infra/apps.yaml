@@ -1,0 +1,21 @@
+# The infra app-of-apps. yadgarhq/argocd's root Application points at its own
+# applicationsets/ directory; this is the equivalent entry point for everything
+# that is not Argo itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-15"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}

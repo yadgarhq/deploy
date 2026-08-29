@@ -1,0 +1,23 @@
+# Every yadgarhq repo carries pre-commit (D59).
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-yaml
+        # Argo CRDs and multi-document manifests.
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-toml
+  - repo: local
+    hooks:
+      - id: gitleaks
+        name: Detect secrets and credentials
+        language: system
+        entry: gitleaks git --pre-commit --staged --verbose
+        pass_filenames: false
