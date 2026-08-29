@@ -5,12 +5,17 @@ SHELL := /bin/bash
 CLUSTER := yadgar
 ARGOCD_CHART_VERSION := 8.6.1
 
+# k3d speaks the Docker API. On this machine that is podman, so point it at the
+# socket. Rootless works for `cluster list` but NOT for `cluster create` — see
+# the blocker in README.md; the declarative fix is tracked in the nix repo.
+export DOCKER_HOST ?= unix:///run/user/$(shell id -u)/podman/podman.sock
+
 .PHONY: up down bootstrap status ui password sync clean
 
 ## Phase 1 — imperative, once.
 up:
 	k3d cluster create --config k3d/cluster.yaml
-	kubectl wait --for=condition=Ready nodes --all --timeout=120s
+	kubectl wait --for=condition=Ready nodes --all --timeout=180s
 
 bootstrap: ## Install Argo CD, then hand control to git.
 	helm repo add argo https://argoproj.github.io/argo-helm >/dev/null

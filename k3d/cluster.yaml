@@ -14,18 +14,28 @@ servers: 1
 # kubelet proves much less than balancing across nodes.
 agents: 2
 
-registries:
-  # Local registry so the image loop is push-and-sync rather than rebuild-the-
-  # cluster. D55 puts one module at a time in "dev mode" with its tag overridden.
-  create:
-    name: yadgar-registry
-    host: "0.0.0.0"
-    hostPort: "5001"
+# NO k3d-MANAGED REGISTRY, and this is a podman constraint rather than a choice.
+# k3d creates its registry node attached to a network literally named `bridge`,
+# which does not exist under podman — and podman REFUSES to create one, because
+# `bridge` is a reserved network *mode* name:
+#   Error: cannot create network with name "bridge" because it conflicts with a
+#   valid network mode
+# Verified on podman 5.8.4 / k3d 5.9.0, 2026-08-29. Both documented workarounds
+# are therefore closed.
+#
+# Image delivery is `k3d image import` instead, which loads into every node and
+# needs no registry at all. D55's dev loop — one module's tag overridden while
+# the rest stays GitOps — works the same either way. Revisit if import latency
+# becomes the bottleneck: a standalone podman registry on an ordinary network,
+# referenced through `registries.config` rather than `registries.create`, avoids
+# the node k3d wants to build.
 
 ports:
-  - port: 8080:80
+  # 8080 and 8443 are common and were already taken on the development machine.
+  # The 18xxx range keeps the cluster out of the way of whatever else is running.
+  - port: 18080:80
     nodeFilters: [loadbalancer]
-  - port: 8443:443
+  - port: 18443:443
     nodeFilters: [loadbalancer]
 
 options:
