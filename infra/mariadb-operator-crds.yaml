@@ -1,0 +1,37 @@
+# The operator's CRDs ship as a SEPARATE chart, and the operator crash-loops
+# without them:
+#
+#   Unable to create controller ... error watching
+#   '.spec.myCnfConfigMapKeyRef.name': no matches for
+#   k8s.mariadb.com/v1alpha1, Resource=
+#
+# The failure names an indexer rather than a missing CRD, so it reads as an
+# operator bug. It is not — it is a missing chart.
+#
+# An earlier sync wave than the operator, because CRDs must exist before the
+# controller that watches them starts. This is the ordering an umbrella chart
+# would have handled implicitly, and paying for it explicitly is the accepted
+# cost of D54.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mariadb-operator-crds
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-12"
+spec:
+  project: default
+  source:
+    repoURL: https://helm.mariadb.com/mariadb-operator
+    chart: mariadb-operator-crds
+    targetRevision: 26.6.0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: mariadb-system
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions:
+      - CreateNamespace=true
+      # CRDs exceed the annotation size limit that client-side apply uses to
+      # store its last-applied state.
+      - ServerSideApply=true

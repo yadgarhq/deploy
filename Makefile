@@ -14,24 +14,47 @@
 # kind with the podman provider, on the existing ROOTLESS podman session. No
 # DOCKER_HOST, no docker socket, no rootful bridge — see README for why k3d was
 # abandoned.
-SHELL := /bin/bash
+# /bin/bash does not exist on NixOS — /bin holds only sh. env resolves bash
+# from PATH instead of assuming a filesystem layout.
+SHELL := /usr/bin/env bash
 ARGOCD_CHART_VERSION := 8.6.1
+# Only for the one-time handover apply. Everything after arrives through git.
+ARGOCD_REPO ?= ../argocd
 
 .PHONY: bootstrap status ui password sync
 
 # Argo CD is installed by hand exactly once, because a GitOps controller cannot
 # arrive by GitOps. Everything after this is `git push`.
 bootstrap: ## Install Argo CD into the running cluster, then hand control to git.
+	@test -n "$$GITHUB_TOKEN" || { \
+		echo "GITHUB_TOKEN is unset."; \
+		echo "The D54 ApplicationSet enumerates the organisation through the"; \
+		echo "GitHub API; unauthenticated is rate-limited hard enough to look"; \
+		echo "like a broken generator. A read-only repo-scope token is enough."; \
+		exit 1; }
 	helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 	helm repo update >/dev/null
 	helm upgrade --install argocd argo/argo-cd \
 		--version $(ARGOCD_CHART_VERSION) \
 		--namespace argocd --create-namespace \
-		--values ../argocd/install/values.yaml \
+		--set configs.params."server\.insecure"=true \
+		--set dex.enabled=false \
+		--set notifications.enabled=false \
 		--wait
+	kubectl -n argocd create secret generic github-scm \
+		--from-literal=token="$$GITHUB_TOKEN" \
+		--dry-run=client -o yaml | kubectl apply -f -
 	@echo "--- Argo CD up. Handing control to git. ---"
-	kubectl apply -f ../argocd/projects/root.yaml
+	kubectl apply -f $(ARGOCD_REPO)/projects/root.yaml
 	kubectl apply -f infra/apps.yaml
+	@echo "Argo now manages its own values from yadgarhq/argocd. make ui / make password."
+
+## The initial install uses --set, not the values file in yadgarhq/argocd. That
+## file is applied one sync later by the root Application, which is the point of
+## Argo managing Argo: reaching across repos with a relative path works only
+## because the two happen to be siblings on one machine, and fails in CI or a
+## fresh clone. Only the handful of settings needed to REACH the server are set
+## here; everything else arrives through git.
 
 status:
 	@kubectl config current-context 2>/dev/null | grep -q kind-yadgar \

@@ -92,6 +92,7 @@ arrive by GitOps. Everything after that is `git push`.
 | Path | |
 |---|---|
 | `infra/apps.yaml` | app-of-apps entry point for everything that is not Argo itself |
+| `infra/mariadb-operator-crds.yaml` | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
 | `infra/mariadb-operator.yaml` | per-module database instances, credentials and backups (D58) |
 | `infra/valkey.yaml` | one shared cache, one key namespace per `-db` (D21) |
 | `infra/nats.yaml` | JetStream, asynchronous work only (D22) |
@@ -102,6 +103,7 @@ arrive by GitOps. Everything after that is `git push`.
 |---|---|
 | -20 | Argo's own root |
 | -15 | this app-of-apps |
+| -12 | CRDs — they must exist before the controller that watches them |
 | -10 | operators, cache, broker |
 | 10 | module services, via the ApplicationSet |
 
