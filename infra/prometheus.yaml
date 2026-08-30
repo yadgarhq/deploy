@@ -49,33 +49,16 @@ spec:
           # answer "what did that call cost", not to be a long-term store — D67
           # sends the wide events elsewhere for that.
           retention: 24h
-        serverFiles:
-          prometheus.yml:
-            scrape_configs:
-              # Pods opt in by annotation rather than being listed here. A static
-              # list is a second place to remember a new module, and D62 already
-              # establishes that a repo declares what it is rather than being
-              # enumerated centrally.
-              - job_name: yadgar-pods
-                kubernetes_sd_configs:
-                  - role: pod
-                    namespaces:
-                      names: [yadgar]
-                relabel_configs:
-                  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-                    action: keep
-                    regex: "true"
-                  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-                    action: replace
-                    regex: ([^:]+)(?::\d+)?;(\d+)
-                    replacement: $1:$2
-                    target_label: __address__
-                  - source_labels: [__meta_kubernetes_pod_label_app]
-                    action: replace
-                    target_label: app
-                  - source_labels: [__meta_kubernetes_pod_name]
-                    action: replace
-                    target_label: pod
+        # NO custom scrape_configs, deliberately. The chart already ships a
+        # `kubernetes-pods` job doing annotation-based discovery, and adding one
+        # of my own scraped every pod TWICE — two targets, two series per pod.
+        #
+        # The per-replica query survived that by accident (numerator and
+        # denominator both doubled), which is the worst kind of correct: any
+        # query that does not divide — a raw rate on a dashboard — would have
+        # read 2x and nothing would have said so.
+        #
+        # Found by checking the target list rather than trusting `up == 1`.
   destination:
     server: https://kubernetes.default.svc
     namespace: observability
