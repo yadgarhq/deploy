@@ -43,6 +43,74 @@ the certificate would have quietly stopped chaining to the root this host trusts
 
 ---
 
+## The identity encryption keys (ledger 452)
+
+`iam` encrypts stored names with AES-256-GCM and looks usernames up by an
+HMAC-SHA256 blind index. It refuses to boot without both keys.
+
+**Losing the encryption key is unrecoverable.** Every stored name becomes
+permanently unreadable — not degraded, gone. Losing the blind-index key is nearly
+as bad: no login can find its user again, because the index it computes no longer
+matches the ones in the table. So the keys live in 1Password first and in the
+cluster second, exactly like the CA below, and for the same reason: a cluster
+rebuild must not destroy them.
+
+Run **once**.
+
+### 1. Mint both keys
+
+```bash
+cd "$(mktemp -d)"
+umask 077
+openssl rand -out encryption.key 32
+openssl rand -out blind-index.key 32
+```
+
+32 bytes of raw material each — not base64, not a passphrase. `iam` refuses a key
+of any other length rather than padding or truncating it into something that
+silently does not match what encrypted the existing rows.
+
+**Two keys, not one, and not the same key twice.** They are separate so that
+compromising the lookup path does not also decrypt the data behind it.
+
+### 2. Store them in 1Password
+
+Raw bytes, so these go in as documents rather than text fields:
+
+```bash
+op document create encryption.key  --title "yadgar iam — encryption key"  --vault Private
+op document create blind-index.key --title "yadgar iam — blind index key" --vault Private
+```
+
+### 3. Load them into the cluster
+
+```bash
+kubectl create secret generic iam-keys \
+  --namespace yadgar \
+  --from-file=encryption.key \
+  --from-file=blind-index.key
+```
+
+Then destroy the local copies:
+
+```bash
+shred -u encryption.key blind-index.key
+cd - && rmdir "$OLDPWD" 2>/dev/null || true
+```
+
+### 4. Check it took
+
+```bash
+kubectl -n yadgar get secret iam-keys -o jsonpath='{.data}' | grep -o 'encryption.key'
+kubectl -n yadgar logs deploy/iam | grep 'crypto keys loaded'
+```
+
+A pod that cannot read them does not start and says why — that is D69's rule
+applied to key material, and it is deliberate: a service that cannot decrypt what
+it stored is broken rather than degraded.
+
+---
+
 ## The development TLS edge (ledger 454)
 
 Establishes HTTPS in front of the gateway so an MCP client on this machine

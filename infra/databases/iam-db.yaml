@@ -1,0 +1,84 @@
+# The identity module's database instance (D58: one instance per module).
+#
+# WRITTEN BEFORE THE MODULE DEPLOYS, not after it failed — which is the whole
+# point of having found this the hard way once. task-db's instance was created by
+# hand and existed only in a running cluster; the first rebuild caught it, with
+# task-db stuck on a missing secret. This one is declared up front.
+#
+# THE DATABASE HOLDS ONLY CIPHERTEXT AND HASHES (D72). Names are AES-GCM
+# encrypted and usernames are looked up by HMAC blind index, with both keys held
+# by `iam` and neither in here — so a dump of this instance, or of its backup,
+# identifies nobody. That is a property of the schema rather than of this file,
+# but it is why this instance needs no special handling beyond the usual.
+#
+# ORIGINALLY: The
+# instance and its password were created by hand in the previous cluster and were
+# never committed — `git log -S "kind: MariaDB"` across deploy, task-db and argocd
+# returns nothing. Everything looked healthy for as long as that cluster lived,
+# and the gap surfaced only when it was rebuilt: task-db stuck in
+# ContainerCreating on `secret "iam-db-password" not found`, with task
+# crash-looping behind it.
+#
+# A GitOps repository that cannot rebuild its own cluster is the failure the
+# whole approach is meant to prevent, and nothing but a rebuild reveals it.
+#
+# NO PASSWORD IN GIT. `generate: true` has the operator mint the secret on first
+# reconcile if it is absent, so the credential is created in-cluster and never
+# passes through a commit. The bootstrap fields below create the instance, the
+# `task` database, the `task` user and its grant in one resource — the separate
+# Database/User/Grant resources are for cases this shape cannot express.
+#
+# THE NAMES ARE A CONTRACT WITH THE CONSUMER. task-db's chart reads
+# `database.host: iam-db-mariadb`, `name: task`, `user: task` and mounts
+# `iam-db-password` at /var/run/secrets/iam-db, where the service opens the
+# file `password` (DB_PASSWORD_FILE in src/main.rs). So the metadata name, the
+# username, the database and the secret's KEY all have to match what is below —
+# a wrong key mounts a secret whose file the service cannot find, which fails as
+# a connection error rather than as a missing file.
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MariaDB
+metadata:
+  name: iam-db-mariadb
+  namespace: yadgar
+spec:
+  # 11.8 or newer is REQUIRED, not preferred: D69's capability probe runs
+  # VEC_DISTANCE_EUCLIDEAN over VEC_FromText at boot and fails the pod when the
+  # engine cannot answer it. An older image starts and then refuses to serve,
+  # which is the loud failure D69 wants — but pinning avoids it entirely.
+  image: mariadb:11.8.8
+
+  rootPasswordSecretKeyRef:
+    name: iam-db-mariadb-root
+    key: password
+    generate: true
+
+  # Bootstrap: the database, the user and the grant the module needs.
+  database: iam
+  username: iam
+  passwordSecretKeyRef:
+    name: iam-db-password
+    key: password
+    generate: true
+
+  # ONE replica. More than one MariaDB replica means Galera, which is a different
+  # topology with its own failure modes, and D55 asks for an environment that is
+  # prod-like in the ways that expose defects rather than in every way. The
+  # invariant about two replicas is about the SERVICES: it exists so client-side
+  # balancing and the migration race are reachable, and both are exercised by
+  # task-db's two replicas pointing at one engine.
+  replicas: 1
+
+  storage:
+    size: 1Gi
+    # kind's bundled local-path-provisioner. Named rather than left to the
+    # cluster default so the manifest says what it binds to.
+    storageClassName: standard
+
+  # Development sizing (D55). The ceiling on this machine is the number of
+  # database instances, which is why each one is kept small.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
