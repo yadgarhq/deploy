@@ -1,0 +1,25 @@
+# The GatewayClass Envoy Gateway watches.
+#
+# The chart does NOT create one — verified by rendering it (`helm template` emits
+# no GatewayClass), and Envoy Gateway's own quickstart has the user apply it
+# separately. A Gateway naming a class nobody created stays Accepted=False with
+# no controller ever looking at it, which reads as a broken Gateway rather than a
+# missing object.
+#
+# The controller name is not a convention to guess at — it is the value the
+# chart's own `config.envoyGateway.gateway.controllerName` default carries, taken
+# from `helm show values` at 1.9.1.
+#
+# NO parametersRef here, deliberately. Infrastructure configuration attaches at
+# the Gateway instead (`spec.infrastructure.parametersRef`), which keeps the
+# EnvoyProxy in the same namespace as the Gateway that uses it. Envoy Gateway's
+# own documentation discourages the GatewayClass-level form once more than one
+# Gateway shares a class and wants different infrastructure — and a cluster-scoped
+# object pointing into one namespace is the kind of coupling that is easy to add
+# and awkward to unpick.
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
