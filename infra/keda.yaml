@@ -1,0 +1,59 @@
+# KEDA — the autoscaling mechanism D68 chose, installed as cluster infrastructure
+# in its own namespace like the database operator.
+#
+# WHY KEDA RATHER THAN A PLAIN HPA. D68's signals are not CPU: a `-db` waits on
+# MariaDB and `ask` waits on an LLM provider, so both saturate at low CPU and a
+# CPU-driven HPA stays quiet precisely when the system is in trouble. The
+# write-path consumers scale on JetStream consumer lag, which no resource metric
+# approximates at all. KEDA covers queue depth natively, wraps a plain HPA for the
+# concurrency cases, and gives scale-to-zero for a module whose plugin is switched
+# off (D1) — one mechanism instead of prometheus-adapter plus special cases.
+#
+# ONE WAVE, NOT TWO, and this is the opposite of mariadb-operator. That chart
+# ships its CRDs SEPARATELY, and landing them at the same wave as the controller
+# made it crash-loop with an error naming an indexer rather than a missing CRD —
+# which is why -12 exists. KEDA ships its CRDs INSIDE the same chart (verified
+# 2026-08-30 against kedacore/charts: keda/templates/crds/ holds all six), so it
+# needs no separate wave.
+#
+# Licence and supply chain verified before adoption, per O10: Apache-2.0 from the
+# repository's own LICENSE, CNCF graduated, maintainers across four employers,
+# images pulling anonymously from ghcr.io by exact tag.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: keda
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://kedacore.github.io/charts
+    chart: keda
+    targetRevision: 2.20.2
+    helm:
+      values: |
+        # Development sizing (D55). The ceiling on this machine is the ~19
+        # database instances, not the controllers.
+        resources:
+          operator:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+          metricServer:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: keda
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The CRDs are large enough to exceed the last-applied-configuration
+      # annotation limit, which is a kubectl apply failure rather than a KEDA one.
+      - ServerSideApply=true
