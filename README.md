@@ -110,14 +110,15 @@ privilege inside `yadgar` — worse than where it started.
 None of these is yadgar code, which is why no repository here corresponds to
 them. Argo installs them from upstream charts.
 
-| Workload                           | Chart              | Source            | What it is                                                                                             |
-| ---------------------------------- | ------------------ | ----------------- | ------------------------------------------------------------------------------------------------------ |
-| `mariadb-operator`                 | `mariadb-operator` | helm.mariadb.com  | Reconciles `MariaDB` resources into real instances — what makes D58's per-module databases declarative |
-| `mariadb-operator-webhook`         | same               | same              | Admission webhook validating `MariaDB` resources                                                       |
-| `mariadb-operator-cert-controller` | same               | same              | Issues and rotates the webhook's certs, so cert-manager is not a dependency                            |
-| `nats-0`                           | `nats`             | nats-io.github.io | The JetStream server (D22)                                                                             |
-| `valkey-primary` + replicas        | `valkey`           | Bitnami           | The one shared cache (D21)                                                                             |
-| `local-path-provisioner`           | —                  | **kind itself**   | Default StorageClass. Not deployed by this repo.                                                       |
+| Workload                               | Chart              | Source             | What it is                                                                                             |
+| -------------------------------------- | ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------ |
+| `mariadb-operator`                     | `mariadb-operator` | helm.mariadb.com   | Reconciles `MariaDB` resources into real instances — what makes D58's per-module databases declarative |
+| `mariadb-operator-webhook`             | same               | same               | Admission webhook validating `MariaDB` resources                                                       |
+| `mariadb-operator-cert-controller`     | same               | same               | Issues and rotates the webhook's certs, so cert-manager is not a dependency                            |
+| `nats-0`                               | `nats`             | nats-io.github.io  | The JetStream server (D22)                                                                             |
+| `valkey-primary` + replicas            | `valkey`           | Bitnami            | The one shared cache (D21)                                                                             |
+| `local-path-provisioner`               | —                  | **kind itself**    | Default StorageClass. Not deployed by this repo.                                                       |
+| `cert-manager` (+ webhook, cainjector) | `cert-manager`     | charts.jetstack.io | Issues and renews the development TLS certificate (D71)                                                |
 
 `nats-box` is disabled. It is a shell with the NATS CLI in it — a debugging
 convenience rather than part of the system, and `kubectl run` covers the same
@@ -132,6 +133,29 @@ need on the rare occasion it arises.
 | `infra/mariadb-operator.yaml`             | per-module database instances, credentials and backups (D58)                                     |
 | `infra/valkey-app.yaml` + `infra/valkey/` | one shared cache (D21), hand-written rather than a chart                                         |
 | `infra/nats.yaml`                         | JetStream, asynchronous work only (D22)                                                          |
+| `infra/cert-manager.yaml`                 | certificate issuance and renewal for the TLS edge (D71)                                          |
+| `infra/tls-app.yaml` + `infra/tls/`       | the ClusterIssuer, the gateway certificate and the Gateway itself (D71)                          |
+
+## Reaching the cluster from the host — the rootless constraint
+
+Measured 2026-08-30, and it rules out an entire family of answers.
+
+**The host cannot route to container IPs.** Rootless podman puts them in a user
+namespace:
+
+```
+node container IP: 10.89.4.3
+$ curl https://10.89.4.3:6443/     # host CANNOT reach it
+```
+
+So `type: LoadBalancer` is not an option here whatever provides it —
+`cloud-provider-kind` allocates addresses on exactly that unreachable network,
+and kind's current documentation assumes it. The only paths into the cluster are
+the `extraPortMappings` kind was created with (18080→80, 18443→443 on the
+control-plane node) and `kubectl port-forward`.
+
+That in turn is why the TLS edge cares about `hostPort`: reaching the mapped
+node port 443 needs a pod bound to it, since NodePort's default range starts at 30000.
 
 ## Sync waves
 

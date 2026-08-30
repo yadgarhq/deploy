@@ -1,0 +1,36 @@
+# The development TLS edge: the issuer, the gateway's certificate and the
+# Gateway itself. Hand-written manifests rather than a chart — there are three
+# objects and nothing to parameterise.
+#
+# A LATER WAVE THAN ITS DEPENDENCIES, and this ordering is load-bearing twice
+# over. The ClusterIssuer and Certificate are cert-manager CRDs, and the Gateway
+# is a Gateway API CRD installed by Envoy Gateway's chart; a custom resource
+# applied before its definition exists is a hard sync failure, not something Argo
+# retries into place. Both of those land at -10.
+#
+# EXPECT THIS APPLICATION TO BE UNHEALTHY UNTIL MIGRATION_NOTES STEP 3 HAS RUN.
+# The ClusterIssuer references a secret holding the CA private key, which is
+# created by hand from 1Password and is deliberately not in git. Until it exists
+# the issuer reports NotReady and the Certificate stays unissued. That is the
+# intended behaviour: the alternative is an issuer that quietly mints its own
+# untrusted root, which would look healthy while serving a certificate nothing
+# trusts.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: tls
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/tls
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

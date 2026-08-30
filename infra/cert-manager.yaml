@@ -1,0 +1,76 @@
+# cert-manager — here to sign the development TLS certificate the gateway serves,
+# and nothing else yet.
+#
+# WHY IT EXISTS AT ALL rather than one `openssl` certificate in a secret. The
+# hand-made version is genuinely less machinery, and it is the right answer for a
+# cluster you rebuild weekly. This one is not: it is nix-declarative with a
+# systemd unit, so it outlives a 90-day certificate. When that certificate
+# expires there is no renewal and no warning — TLS simply starts failing, and the
+# quickest apparent fix is to stop verifying. Automatic renewal is the entire
+# value here.
+#
+# It does NOT own the trust anchor. The CA key is minted by hand, kept in
+# 1Password and loaded as a secret (MIGRATION_NOTES.md); cert-manager signs with
+# it. See infra/tls/clusterissuer.yaml for why the root is external.
+#
+# Licence and supply chain verified before adoption, per O10: Apache-2.0 from the
+# chart's own annotation and the repository LICENSE, CNCF graduated, chart served
+# over HTTPS from charts.jetstack.io. Chart v1.21.1 verified present in the live
+# index on 2026-08-30, and its Chart.yaml declares `kubeVersion: >= 1.22.0-0`,
+# which v1.36.1 satisfies.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  annotations:
+    # With the operators. The Certificate and ClusterIssuer that use it land at a
+    # later wave, because an issuer applied before its CRD exists is a sync error
+    # rather than a retry.
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.21.1
+    helm:
+      values: |
+        # `crds.enabled`, NOT `installCRDs`. The old key still exists and still
+        # works, and the chart's own values.yaml marks it deprecated in favour of
+        # this pair — a deprecated key that works is exactly the kind that gets
+        # copied forward for years.
+        crds:
+          enabled: true
+          # Survive an uninstall. Deleting cert-manager's CRDs deletes every
+          # Certificate in the cluster along with them.
+          keep: true
+
+        # Development sizing (D55). The ceiling on this machine is the ~19
+        # database instances, not the controllers.
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+        webhook:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+        cainjector:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # CRDs exceed the annotation size limit client-side apply uses to store its
+      # last-applied state.
+      - ServerSideApply=true

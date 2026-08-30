@@ -1,0 +1,69 @@
+# How the provisioned Envoy data plane is placed and exposed.
+#
+# Envoy Gateway does not run the data plane itself: it provisions a Deployment
+# and a Service per Gateway. This resource is the only way to influence either,
+# and every field below exists because the cluster forces it.
+#
+# WHY NODEPORT, AND WHY THESE EXACT NUMBERS. Two measurements, not preferences:
+#
+#   1. Under ROOTLESS podman the host cannot route to container IPs at all —
+#      the node sits on 10.89.4.3 and curl from the host cannot reach it. So
+#      `type: LoadBalancer` is unavailable whatever provides it, cloud-provider-kind
+#      and metallb included: they allocate addresses on a network this machine
+#      cannot see.
+#   2. The EnvoyProxy CRD has no hostPort or hostNetwork field (checked against
+#      the v1.9 API types), so nothing can bind the node's :443 directly.
+#
+# What remains is NodePort, whose default range starts at 30000. kind's
+# extraPortMappings therefore map host 18443 to node port 30443, and the nodePort
+# below is PINNED to match. An unpinned nodePort is allocated at random and the
+# mapping stops pointing at anything — a cluster that looks correct and answers
+# nothing. These two numbers live in two repositories and must agree:
+# modules/nixos/kind.nix in the nix repo is the other half.
+#
+# THE PATCH IS THE ONLY ROUTE TO A PINNED NODEPORT. KubernetesServiceSpec exposes
+# `type` but no nodePort field; `patch` is the documented escape hatch. The
+# StrategicMerge merge key for a Service's ports is the PORT NUMBER
+# (`patchMergeKey:"port"` on corev1.ServiceSpec.Ports), so the entry below matches
+# on `port: 443` and needs no port name — which is the part most easily got wrong,
+# since Envoy Gateway derives names like `https-443` internally.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: edge
+  namespace: yadgar
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        # Two, per the invariant. A single proxy replica makes a class of defect
+        # unreachable, and there is no reason for the edge to be the exception.
+        # Both land on one node here, which NodePort permits — unlike hostPort,
+        # where the second replica would sit Pending on a port conflict.
+        replicas: 2
+        pod:
+          # ONLY the control-plane node carries kind's port mappings, so the data
+          # plane has to run there. The taint means a nodeSelector alone is not
+          # enough: without the toleration the pod stays Pending while every
+          # manifest looks correct.
+          #
+          # This label is the node's stock one. kind's ingress recipe prescribes
+          # `ingress-ready=true`, which this cluster does not have — and adding it
+          # would mean editing the cluster definition, which belongs to nix (D55).
+          # Two writers of one resource is the failure that avoids.
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+      envoyService:
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - port: 443
+                  nodePort: 30443

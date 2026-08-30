@@ -1,0 +1,51 @@
+# The gateway's serving certificate.
+#
+# Lives in `yadgar`, the same namespace as the Gateway that consumes it. Gateway
+# API will not read a TLS secret across namespaces without a ReferenceGrant, and
+# keeping both here means there is no grant to forget — one fewer object whose
+# absence produces a Gateway that is Accepted but not Programmed.
+#
+# cert-manager renews at two thirds of the duration and rewrites the secret in
+# place; Envoy Gateway picks the new material up without a restart. That
+# automatic renewal is the whole reason cert-manager is here rather than an
+# `openssl` certificate pasted into a secret: a hand-made certificate expires
+# with no warning and no mechanism, and the first symptom is a client failing to
+# connect months later.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-tls
+  namespace: yadgar
+spec:
+  secretName: gateway-tls
+
+  # .localhost, deliberately. RFC 6761 reserves it and guarantees loopback
+  # resolution. NOT .local, which RFC 6762 reserves for mDNS — Avahi and
+  # systemd-resolved intercept that, and the resulting failures read as a cluster
+  # problem rather than a naming one.
+  #
+  # The name must also satisfy the root's nameConstraints extension, which
+  # permits only DNS names under yadgar.localhost. A name outside that is
+  # rejected at verification even though signing succeeds, so this list and the
+  # constraint in MIGRATION_NOTES step 1 have to agree.
+  dnsNames:
+    - gateway.yadgar.localhost
+  commonName: gateway.yadgar.localhost
+
+  duration: 2160h # 90d, cert-manager's default, stated rather than implied
+  renewBefore: 720h # 30d
+
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # Renewal mints a new key rather than re-signing the old one. A long-lived
+    # key behind a short-lived certificate makes the rotation cosmetic.
+    rotationPolicy: Always
+
+  usages:
+    - server auth
+
+  issuerRef:
+    name: yadgar-dev-ca
+    kind: ClusterIssuer
+    group: cert-manager.io

@@ -17,6 +17,20 @@
   worth keeping.
 -->
 
+## Changelog
+
+<!--
+  Conventional Commits bullets, ONE PER LINE — every line under this heading is
+  parsed, so a wrapped bullet fails. Examples:
+
+    - feat: terminate TLS at the edge with Envoy Gateway
+    - fix: pin the data plane's nodePort so kind's mapping keeps pointing at it
+    - feat!: drop the plaintext listener
+
+  `!` marks a breaking change and implies a major bump; `feat:` implies minor,
+  everything else patch. The highest bullet wins.
+-->
+
 ## Verification
 
 <!--

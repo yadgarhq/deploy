@@ -1,0 +1,49 @@
+# The edge itself. One listener, HTTPS only.
+#
+# NO PLAINTEXT LISTENER, deliberately. A port-80 listener would exist only to
+# redirect, and until something needs redirecting it is a way to serve MCP over
+# plaintext by accident — the gateway attests caller identity (ADR-0488), so an
+# unencrypted path past it is worth more than the convenience. kind's 18080→30080
+# mapping is therefore unused for now, and that is a spare door rather than a
+# missing one.
+#
+# The certificate comes from infra/tls/certificate.yaml in this same namespace.
+# Gateway API will not read a TLS secret across namespaces without a
+# ReferenceGrant, and keeping both here means there is no grant to forget.
+#
+# `hostname` is what the certificate is issued for and what the root's
+# nameConstraints extension permits. All three have to agree — the certificate's
+# dnsNames, this hostname, and the CA's constraint — or verification fails after
+# signing succeeds, which is a confusing place to discover a typo.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+  namespace: yadgar
+spec:
+  gatewayClassName: eg
+
+  # Attached HERE rather than on the GatewayClass, so the EnvoyProxy lives beside
+  # the Gateway it configures instead of a cluster-scoped object reaching into one
+  # namespace. namespace is implicit at this level: same as the Gateway.
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: edge
+
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: gateway.yadgar.localhost
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: gateway-tls
+      allowedRoutes:
+        namespaces:
+          # `yadgar` only. Routes are attached by the modules being fronted, and
+          # every one of them lives here (D54).
+          from: Same
