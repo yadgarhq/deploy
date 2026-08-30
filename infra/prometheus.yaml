@@ -1,0 +1,87 @@
+# Prometheus, and it is here for ONE reason: D68's autoscaler needs somewhere to
+# read D67's metrics from. KEDA's prometheus scaler queries a server; the services
+# expose /metrics and nothing was scraping them.
+#
+# SERVER ONLY. No alertmanager, no pushgateway, no node-exporter, no kube-state.
+# A development cluster does not need paging, and every extra component is one
+# more thing to keep healthy for no current purpose. They can be enabled the day
+# something wants them (D55: the environment is prod-like in the ways that expose
+# defects, not in every way).
+#
+# Licence and supply chain verified before adoption, per O10: Apache-2.0 from the
+# repository's own LICENSE, CNCF graduated, image pullable by exact tag from
+# quay.io.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+  annotations:
+    # Before the modules, which is what it scrapes — but after the operators, so
+    # it is not competing for the first wave.
+    argocd.argoproj.io/sync-wave: "-8"
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: prometheus
+    targetRevision: 29.27.0
+    helm:
+      values: |
+        alertmanager:
+          enabled: false
+        prometheus-pushgateway:
+          enabled: false
+        prometheus-node-exporter:
+          enabled: false
+        kube-state-metrics:
+          enabled: false
+        server:
+          # Development sizing (D55): the ceiling here is the ~19 database
+          # instances, not the observability stack.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          persistentVolume:
+            size: 2Gi
+          # A short window on purpose. This exists to drive an autoscaler and to
+          # answer "what did that call cost", not to be a long-term store — D67
+          # sends the wide events elsewhere for that.
+          retention: 24h
+        serverFiles:
+          prometheus.yml:
+            scrape_configs:
+              # Pods opt in by annotation rather than being listed here. A static
+              # list is a second place to remember a new module, and D62 already
+              # establishes that a repo declares what it is rather than being
+              # enumerated centrally.
+              - job_name: yadgar-pods
+                kubernetes_sd_configs:
+                  - role: pod
+                    namespaces:
+                      names: [yadgar]
+                relabel_configs:
+                  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                    action: keep
+                    regex: "true"
+                  - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+                    action: replace
+                    regex: ([^:]+)(?::\d+)?;(\d+)
+                    replacement: $1:$2
+                    target_label: __address__
+                  - source_labels: [__meta_kubernetes_pod_label_app]
+                    action: replace
+                    target_label: app
+                  - source_labels: [__meta_kubernetes_pod_name]
+                    action: replace
+                    target_label: pod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: observability
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
