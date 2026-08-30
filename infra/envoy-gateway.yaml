@@ -1,0 +1,79 @@
+# Envoy Gateway — the Gateway API implementation that terminates TLS at the edge
+# (D71).
+#
+# GATEWAY API RATHER THAN INGRESS, and this is forced rather than preferred.
+# Ingress NGINX was RETIRED in March 2026 by the Kubernetes Steering and Security
+# Response Committees — no releases, no bug fixes, no CVE patches — and the
+# `Ingress` API itself is frozen, with Kubernetes' own documentation now pointing
+# at Gateway instead. Either would have meant adopting a dead API and an
+# unpatched controller on day one.
+#
+# WHY THIS IMPLEMENTATION. Apache-2.0, part of the Envoy project rather than a
+# single vendor, and single-purpose. NGINX Gateway Fabric would work and is the
+# one implementation with a TYPED hostPort field, which would have avoided the
+# cluster's port remap — but choosing the gateway for ~61 services on the basis
+# of which one can bind a host port inside kind is letting a development-cluster
+# quirk drive a production decision. The remap was the cheaper thing to change.
+# **Rejected:** kgateway (CNCF Sandbox, Envoy-based, but hostPort only through an
+# unvalidated strategic-merge overlay and no DaemonSet mode); Traefik (bundles a
+# proxy, dashboard and middleware surface nothing here needs); Cilium (conformant,
+# but it is a CNI replacement — swapping a working cluster's network layer to
+# terminate one TLS listener is not proportionate).
+#
+# IT INSTALLS THE GATEWAY API CRDs ITSELF (`crds.enabled`, default true), so
+# unlike mariadb-operator there is no separate CRD chart and no earlier wave. That
+# is why -12 exists for the database operator and does not exist here.
+#
+# Envoy Gateway 1.9 requires Gateway API v1.6.1 EXACTLY, per its own
+# compatibility matrix, and supports Kubernetes v1.33 through v1.36 — this cluster
+# runs v1.36.1, at the top of that range. Both verified 2026-08-30 against the
+# project's matrix and a live `helm show chart`, per O10.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: envoy-gateway
+  namespace: argocd
+  annotations:
+    # With the operators, and before the Gateway resource at -5: a Gateway
+    # applied ahead of the CRD this chart installs is a hard sync failure rather
+    # than something Argo retries into place.
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    # OCI, in the form Argo CD 3.1 documents for a Helm chart held as an OCI
+    # artifact: the `oci://` scheme carries the full reference including the chart
+    # name, and `path` is `.`. Argo also accepts the Helm-source form — repoURL
+    # `docker.io/envoyproxy` with `chart: gateway-helm` and no scheme — but the
+    # two must not be mixed, and this one names the exact reference that
+    # `helm show chart` was verified against.
+    #
+    # No repository Secret: the chart is public, and Argo's own OCI examples
+    # declare public Docker Hub charts with no registration at all.
+    repoURL: oci://docker.io/envoyproxy/gateway-helm
+    path: .
+    targetRevision: 1.9.1
+    helm:
+      values: |
+        # Development sizing (D55). The ceiling on this machine is the ~19
+        # database instances, not the controllers.
+        deployment:
+          envoyGateway:
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: envoy-gateway-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      # The chart does not create its own namespace — its install instructions
+      # pass --create-namespace, which has no equivalent here.
+      - CreateNamespace=true
+      # Gateway API CRDs exceed the annotation size limit that client-side apply
+      # uses to store its last-applied state.
+      - ServerSideApply=true

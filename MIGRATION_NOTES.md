@@ -6,6 +6,43 @@ rather than side effects.
 
 ---
 
+## Recreate the kind cluster on the new port mapping (ledger 454)
+
+**Do this first** — the TLS edge below cannot be reached until it is done.
+
+`modules/nixos/kind.nix` in the nix repo now maps host 18080/18443 to node ports
+**30080/30443** instead of 80/443. `extraPortMappings` is fixed at cluster
+creation, so the running cluster still carries the old mapping and the change
+takes effect only on a rebuild.
+
+Why the mapping changed: Envoy Gateway provisions its own Envoy data plane and
+its `EnvoyProxy` CRD exposes no `hostPort` or `hostNetwork` field, so nothing can
+bind the node's `:443`. NodePort is the remaining route in and its default range
+starts at 30000. `type: LoadBalancer` is not an alternative — under rootless
+podman the host cannot route to container IPs at all (measured: the node sits on
+`10.89.4.3` and the host cannot reach it), so every LB provider allocates
+addresses on a network this machine cannot see.
+
+```bash
+sudo nixos-rebuild switch          # picks up the new kind.nix
+
+KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name yadgar
+sudo systemctl restart kind-yadgar-cluster
+kubectl get nodes                  # 3 nodes Ready, on the new mapping
+```
+
+Everything in the cluster is GitOps, so Argo rebuilds it — but two things do not
+come back on their own:
+
+- **the Argo CD install itself**: `make bootstrap` (needs `GITHUB_TOKEN`)
+- **the CA secret**: step 3 below, from 1Password
+
+That second one is the external-CA decision paying for itself. A root minted
+inside the cluster by a SelfSigned issuer would have been regenerated here, and
+the certificate would have quietly stopped chaining to the root this host trusts.
+
+---
+
 ## The development TLS edge (ledger 454)
 
 Establishes HTTPS in front of the gateway so an MCP client on this machine
