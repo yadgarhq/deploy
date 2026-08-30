@@ -16,7 +16,13 @@ repos:
       - id: check-toml
   # Shared, from yadgarhq/actions (D62) — this was a near-identical local block
   # in every repository until the shared definition existed.
+  # IMMUTABLE rev, unlike the @v1 the workflow caller pins. pre-commit caches a
+  # rev at first install and never re-resolves it — "mutable references are never
+  # updated after first install and are not supported" — so a moving tag here
+  # would silently freeze each machine at whatever v1 meant the day it first ran.
+  # GitHub Actions re-resolves @v1 every run; pre-commit does not. Bump with
+  # `pre-commit autoupdate`.
   - repo: https://github.com/yadgarhq/actions
-    rev: v1
+    rev: v1.0.0
     hooks:
       - id: gitleaks
