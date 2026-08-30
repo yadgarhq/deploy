@@ -130,7 +130,7 @@ need on the rare occasion it arises.
 | `infra/apps.yaml` | app-of-apps entry point for everything that is not Argo itself |
 | `infra/mariadb-operator-crds.yaml` | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
 | `infra/mariadb-operator.yaml` | per-module database instances, credentials and backups (D58) |
-| `infra/valkey.yaml` | one shared cache, one key namespace per `-db` (D21) |
+| `infra/valkey-app.yaml` + `infra/valkey/` | one shared cache (D21), hand-written rather than a chart |
 | `infra/nats.yaml` | JetStream, asynchronous work only (D22) |
 
 ## Sync waves
@@ -146,9 +146,41 @@ need on the rare occasion it arises.
 Ordering is what an umbrella chart would have given for free, and paying for it
 here is the accepted cost of D54.
 
+## The Bitnami risk, resolved
+
+Recorded because it was flagged as a theoretical risk and turned out to be a
+live defect.
+
+The Valkey chart was Bitnami's. Bitnami restricted free image distribution in
+2025, and the consequence is concrete — verified 2026-08-30 with `skopeo`:
+
+```
+bitnami/valkey:9.1.1   NOT PULLABLE
+bitnami/valkey:8.1     NOT PULLABLE
+bitnami/valkey:latest  the only tag that resolves
+```
+
+So the chart pinned at 6.2.13 was running `:latest`. **Pinning was not possible
+there, only unpinning** — a rebuild months later silently gets a different
+Valkey. Overriding the image to the official one does not work either, because
+the chart's entrypoint expects Bitnami's `/opt/bitnami` layout.
+
+Replaced with hand-written manifests on the official `valkey/valkey:9.1.1`,
+which pins cleanly. D21 asks for one shared deployment, so the chart was buying
+configuration nobody needed at the cost of a supply chain nobody controls.
+
+**No persistence and no replicas, deliberately.** Nothing in this cache survives
+loss because nothing needs to: compute caches are content-addressed (D17), row
+caches key on D8's version and query caches on an epoch, and D29 already
+requires an evicted conversation token to degrade to a new conversation and say
+so. Losing it costs a cold start, not data.
+
 ## Known risk
 
-The Valkey chart is Bitnami's, and Bitnami restricted free image distribution in
-2025 — the chart resolves, but its images may not stay pullable. The fallback is
-the official Valkey image with a hand-written manifest. O10's standing
-instruction to re-verify before depending on a dependency applies.
+`mariadb-operator` runs with cluster-wide RBAC. `currentNamespaceOnly: true`
+would narrow it to a `Role`, but it also renders the chart down to five
+resources and silently drops the admission webhook — so a malformed `MariaDB`
+resource would be accepted and fail later in the operator's logs instead of
+being rejected at apply time. With ~19 such resources central to D58, and D27
+making one deployment one organisation, validation is worth more than the
+narrower role. Revisit if the deployment ever hosts anything else.

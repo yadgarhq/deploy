@@ -1,0 +1,104 @@
+# The one shared cache (D21): a single Valkey deployment, with each -db service
+# using its own key namespace. Holds the row and query caches D17 places inside
+# each twin, the epoch counters that replace D18's in-process bus, conversation
+# tokens (D29), throttle counters (D46) and the debounced last_seen_at of D52.
+#
+# NOT a cache service fronting the databases — D21 rejects that explicitly. Each
+# -db owns its own invalidation because under D4 it is the only single writer
+# able to do it correctly.
+#
+# ── Why a hand-written manifest instead of a chart ──────────────────────────
+# The Bitnami chart was used first and removed. Bitnami restricted free image
+# distribution in 2025, and the consequence is not theoretical — verified
+# 2026-08-30 with skopeo:
+#
+#   bitnami/valkey:9.1.1   NOT PULLABLE
+#   bitnami/valkey:8.1     NOT PULLABLE
+#   bitnami/valkey:latest  the only tag that resolves
+#
+# So the chart pins to 6.2.13 while its image is `:latest`. PINNING IS NOT
+# POSSIBLE THERE, only unpinning. A rebuild months from now silently gets a
+# different Valkey. Overriding the image to the official one does not work
+# either: the chart's entrypoint expects Bitnami's /opt/bitnami layout.
+#
+# The official image pins cleanly and what D21 actually asks for is one
+# deployment, so a chart was buying configuration nobody needed at the cost of a
+# supply chain nobody controls.
+#
+# ── Why no persistence, and no replicas ────────────────────────────────────
+# NOTHING HERE SURVIVES LOSS BECAUSE NOTHING HERE NEEDS TO. Compute caches are
+# content-addressed, so a stale entry is impossible by construction (D17). Row
+# caches key on D8's version and query caches on an epoch, so both recompute.
+# D29 already requires an evicted conversation token to degrade to a new
+# conversation and SAY SO. Losing this cache costs a cold start, not data —
+# which is why it is a Deployment with no volume rather than a StatefulSet with
+# a PVC, and one instance rather than four.
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: yadgar
+  labels: { app.kubernetes.io/name: valkey }
+spec:
+  selector: { app.kubernetes.io/name: valkey }
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: yadgar
+  labels: { app.kubernetes.io/name: valkey }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app.kubernetes.io/name: valkey }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: valkey }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: valkey
+          # Official upstream image, pinned. The whole reason this is not a
+          # chart.
+          image: valkey/valkey:9.1.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --maxmemory
+            - 512mb
+            # A cache that refuses writes when full is not a cache. Eviction is
+            # the correct behaviour for every class of entry stored here, all of
+            # which are recomputable.
+            - --maxmemory-policy
+            - allkeys-lru
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+          ports:
+            - name: valkey
+              containerPort: 6379
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 640Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          livenessProbe:
+            tcpSocket: { port: valkey }
+            initialDelaySeconds: 5
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 5

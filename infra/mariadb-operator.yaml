@@ -1,3 +1,16 @@
+# THE OPERATOR IS CLUSTER INFRASTRUCTURE, NOT A YADGAR RESOURCE, and so it lives
+# in its own namespace while the MariaDB instances it creates land in `yadgar`.
+# That is the line: the machinery is infrastructure, the databases are ours.
+#
+# `currentNamespaceOnly: true` was tried and reverted. It scopes RBAC to a Role
+# instead of a ClusterRole — genuinely better — but it also renders the chart
+# down to five resources, silently dropping the ADMISSION WEBHOOK and its
+# cert-controller. A malformed MariaDB resource is then accepted and fails later
+# in the operator's logs rather than being rejected at apply time. D58 makes ~19
+# MariaDB resources the centrepiece of the storage design, so validating them is
+# worth more than narrowing RBAC — especially under D27, where one deployment is
+# one organisation and there is no other tenant to protect against.
+#
 # Provisioning, credentials, backup and restore for the database instances D58
 # requires — one per module, never shared. Nineteen hand-rolled StatefulSets
 # would mean nineteen bespoke backup jobs and restore-verify paths, and backup
@@ -21,17 +34,9 @@ spec:
     repoURL: https://helm.mariadb.com/mariadb-operator
     chart: mariadb-operator
     targetRevision: 26.6.0
-    helm:
-      values: |
-        # The operator defaults to watching every namespace and carries
-        # cluster-wide RBAC to match. Moving it into the application namespace
-        # without changing that would concentrate cluster-wide privilege inside
-        # `yadgar`, which is worse than where it started. Scoped, its reach
-        # matches its home.
-        currentNamespaceOnly: true
   destination:
     server: https://kubernetes.default.svc
-    namespace: yadgar
+    namespace: mariadb-system
   syncPolicy:
     automated: {prune: true, selfHeal: true}
     syncOptions: [CreateNamespace=true, ServerSideApply=true]

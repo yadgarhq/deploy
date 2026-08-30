@@ -1,0 +1,21 @@
+# Hand-written manifests rather than a chart — see infra/valkey/valkey.yaml for
+# why, in short: the Bitnami chart's image cannot be pinned any more.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: valkey
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/valkey
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

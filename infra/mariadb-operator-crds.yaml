@@ -32,7 +32,7 @@ spec:
     targetRevision: 26.6.0
   destination:
     server: https://kubernetes.default.svc
-    namespace: yadgar
+    namespace: mariadb-system
   syncPolicy:
     automated: {prune: true, selfHeal: true}
     syncOptions:
