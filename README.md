@@ -87,6 +87,42 @@ make bootstrap   # Argo CD into the running cluster, then git owns everything
 Argo CD is installed by hand exactly once, because a GitOps controller cannot
 arrive by GitOps. Everything after that is `git push`.
 
+## Namespaces
+
+Everything yadgar deploys lands in **`yadgar`** — its own services via the D54
+ApplicationSet, and the infrastructure they depend on. Two things sit outside it,
+and neither is a configuration choice:
+
+- **CRDs.** `CustomResourceDefinition` is cluster-scoped and has no namespace at
+  all, so "everything in the `yadgar` namespace" cannot be literally true while
+  an operator is involved.
+- **`local-path-provisioner`**, in `local-path-storage`. It ships with kind to
+  provide a default StorageClass. It is not ours, and in a real deployment a
+  proper CSI driver takes its place.
+
+The `mariadb-operator` is scoped with `currentNamespaceOnly`. It defaults to
+watching every namespace with cluster-wide RBAC to match, and moving it into the
+application namespace without changing that would concentrate cluster-wide
+privilege inside `yadgar` — worse than where it started.
+
+## Where the third-party workloads come from
+
+None of these is yadgar code, which is why no repository here corresponds to
+them. Argo installs them from upstream charts.
+
+| Workload | Chart | Source | What it is |
+|---|---|---|---|
+| `mariadb-operator` | `mariadb-operator` | helm.mariadb.com | Reconciles `MariaDB` resources into real instances — what makes D58's per-module databases declarative |
+| `mariadb-operator-webhook` | same | same | Admission webhook validating `MariaDB` resources |
+| `mariadb-operator-cert-controller` | same | same | Issues and rotates the webhook's certs, so cert-manager is not a dependency |
+| `nats-0` | `nats` | nats-io.github.io | The JetStream server (D22) |
+| `valkey-primary` + replicas | `valkey` | Bitnami | The one shared cache (D21) |
+| `local-path-provisioner` | — | **kind itself** | Default StorageClass. Not deployed by this repo. |
+
+`nats-box` is disabled. It is a shell with the NATS CLI in it — a debugging
+convenience rather than part of the system, and `kubectl run` covers the same
+need on the rare occasion it arises.
+
 ## What is here
 
 | Path | |

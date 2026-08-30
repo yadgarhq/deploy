@@ -21,9 +21,17 @@ spec:
     repoURL: https://helm.mariadb.com/mariadb-operator
     chart: mariadb-operator
     targetRevision: 26.6.0
+    helm:
+      values: |
+        # The operator defaults to watching every namespace and carries
+        # cluster-wide RBAC to match. Moving it into the application namespace
+        # without changing that would concentrate cluster-wide privilege inside
+        # `yadgar`, which is worse than where it started. Scoped, its reach
+        # matches its home.
+        currentNamespaceOnly: true
   destination:
     server: https://kubernetes.default.svc
-    namespace: mariadb-system
+    namespace: yadgar
   syncPolicy:
     automated: {prune: true, selfHeal: true}
     syncOptions: [CreateNamespace=true, ServerSideApply=true]

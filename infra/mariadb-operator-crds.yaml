@@ -8,6 +8,11 @@
 # The failure names an indexer rather than a missing CRD, so it reads as an
 # operator bug. It is not — it is a missing chart.
 #
+# NOTE ON NAMESPACE: CustomResourceDefinition is CLUSTER-SCOPED and has no
+# namespace. The destination below is where Argo tracks the Application, not
+# where the objects live — they live nowhere, which is why "everything in the
+# yadgar namespace" can never be literally true while an operator is involved.
+#
 # An earlier sync wave than the operator, because CRDs must exist before the
 # controller that watches them starts. This is the ordering an umbrella chart
 # would have handled implicitly, and paying for it explicitly is the accepted
@@ -27,7 +32,7 @@ spec:
     targetRevision: 26.6.0
   destination:
     server: https://kubernetes.default.svc
-    namespace: mariadb-system
+    namespace: yadgar
   syncPolicy:
     automated: {prune: true, selfHeal: true}
     syncOptions:

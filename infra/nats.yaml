@@ -19,9 +19,16 @@ spec:
     repoURL: https://nats-io.github.io/k8s/helm/charts
     chart: nats
     targetRevision: 2.14.6
+    helm:
+      values: |
+        # nats-box is a shell with the NATS CLI in it — a debugging convenience,
+        # not part of the system. `kubectl run` covers the same need on the rare
+        # occasion it arises, without a pod running permanently to provide it.
+        natsBox:
+          enabled: false
   destination:
     server: https://kubernetes.default.svc
-    namespace: yadgar-infra
+    namespace: yadgar
   syncPolicy:
     automated: {prune: true, selfHeal: true}
     syncOptions: [CreateNamespace=true]

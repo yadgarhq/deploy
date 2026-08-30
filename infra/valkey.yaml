@@ -7,6 +7,11 @@
 # -db owns its own invalidation because under D4 it is the only single writer
 # that can do it correctly.
 #
+# FOUR PODS (primary + three replicas) is the chart's default and is kept
+# deliberately. Trimming to standalone for development would be lighter and
+# would make the development topology differ from production — which is the
+# divergence D55 exists to prevent. The machine has the headroom.
+#
 # CHART SOURCE IS A KNOWN RISK. Bitnami restricted its free image distribution
 # in 2025; the chart resolves but its images may not stay pullable. Verify
 # before relying on it, and treat the official Valkey image with a hand-written
@@ -26,7 +31,7 @@ spec:
     targetRevision: 6.2.13
   destination:
     server: https://kubernetes.default.svc
-    namespace: yadgar-infra
+    namespace: yadgar
   syncPolicy:
     automated: {prune: true, selfHeal: true}
     syncOptions: [CreateNamespace=true]
