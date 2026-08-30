@@ -14,10 +14,9 @@ repos:
         args: [--allow-multiple-documents]
       - id: check-json
       - id: check-toml
-  - repo: local
+  # Shared, from yadgarhq/actions (D62) — this was a near-identical local block
+  # in every repository until the shared definition existed.
+  - repo: https://github.com/yadgarhq/actions
+    rev: v1
     hooks:
       - id: gitleaks
-        name: Detect secrets and credentials
-        language: system
-        entry: gitleaks git --pre-commit --staged --verbose
-        pass_filenames: false

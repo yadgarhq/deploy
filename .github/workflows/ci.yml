@@ -1,0 +1,29 @@
+name: ci
+
+# CI is defined once in yadgarhq/actions (D62). This file is the whole of this
+# repository's CI configuration: the shared workflows detect what the repository
+# is — Cargo.toml, buf.yaml, chart/, Dockerfile — and run what applies.
+#
+# Pinned to @v1, which is additive-only. Third-party actions are pinned by SHA
+# inside the shared workflows because a tag someone else owns can move; @v1 is
+# ours and moving it deliberately is how 70-odd repositories get an upgrade
+# without 70-odd edits.
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  pr:
+    if: github.event_name == 'pull_request'
+    uses: yadgarhq/actions/.github/workflows/ci-pr.yml@v1
+
+  # Direct pushes to main still get validated. The repository is pushed to
+  # directly, so gating only on pull requests would gate almost nothing.
+  validation:
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    uses: yadgarhq/actions/.github/workflows/ci-validation.yml@v1
