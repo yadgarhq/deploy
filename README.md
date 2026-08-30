@@ -126,15 +126,16 @@ need on the rare occasion it arises.
 
 ## What is here
 
-| Path                                      |                                                                                                  |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `infra/apps.yaml`                         | app-of-apps entry point for everything that is not Argo itself                                   |
-| `infra/mariadb-operator-crds.yaml`        | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
-| `infra/mariadb-operator.yaml`             | per-module database instances, credentials and backups (D58)                                     |
-| `infra/valkey-app.yaml` + `infra/valkey/` | one shared cache (D21), hand-written rather than a chart                                         |
-| `infra/nats.yaml`                         | JetStream, asynchronous work only (D22)                                                          |
-| `infra/cert-manager.yaml`                 | certificate issuance and renewal for the TLS edge (D71)                                          |
-| `infra/tls-app.yaml` + `infra/tls/`       | the ClusterIssuer, the gateway certificate and the Gateway itself (D71)                          |
+| Path                                            |                                                                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `infra/apps.yaml`                               | app-of-apps entry point for everything that is not Argo itself                                   |
+| `infra/mariadb-operator-crds.yaml`              | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
+| `infra/mariadb-operator.yaml`                   | the operator itself — reconciles `MariaDB` resources; holds no instances                         |
+| `infra/databases-app.yaml` + `infra/databases/` | the per-module database instances, one per module (D58)                                          |
+| `infra/valkey-app.yaml` + `infra/valkey/`       | one shared cache (D21), hand-written rather than a chart                                         |
+| `infra/nats.yaml`                               | JetStream, asynchronous work only (D22)                                                          |
+| `infra/cert-manager.yaml`                       | certificate issuance and renewal for the TLS edge (D71)                                          |
+| `infra/tls-app.yaml` + `infra/tls/`             | the ClusterIssuer, the gateway certificate and the Gateway itself (D71)                          |
 
 ## Reaching the cluster from the host — the rootless constraint
 

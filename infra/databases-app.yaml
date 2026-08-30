@@ -1,0 +1,42 @@
+# The per-module database instances (D58).
+#
+# SEPARATE FROM infra/mariadb-operator.yaml, which installs the operator and
+# nothing else. The README claimed that file carried "per-module database
+# instances, credentials and backups" — it never did, and the claim is corrected
+# there. This Application is what makes it true.
+#
+# A LATER WAVE THAN THE OPERATOR AND EARLIER THAN THE MODULES. A MariaDB resource
+# applied before its CRD is a hard sync failure, and a module started before its
+# database exists sits in ContainerCreating on a missing secret. Both were
+# observed; -8 sits between the operator at -10 and the ApplicationSet at 10.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: databases
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-8"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/databases
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions: [CreateNamespace=true]
+  ignoreDifferences:
+    # The operator writes the generated credential's name back onto the spec it
+    # reconciles. Argo sees its own manifest differ from the live object and
+    # reports OutOfSync forever, then selfHeal reverts it — a sync loop that
+    # looks like drift and is actually the operator doing its job.
+    - group: k8s.mariadb.com
+      kind: MariaDB
+      jsonPointers:
+        - /spec/rootPasswordSecretKeyRef/generate
+        - /spec/passwordSecretKeyRef/generate
