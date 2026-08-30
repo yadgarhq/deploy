@@ -38,13 +38,13 @@ kubectl config current-context    # kind-yadgar
 **kind with the podman provider** (`KIND_EXPERIMENTAL_PROVIDER=podman`), running
 on the existing **rootless** podman session.
 
-| | |
-|---|---|
-| Kubernetes | **v1.36.1, upstream** — kubeadm, containerd 2.3.1. Not k3s. |
-| Nodes | `yadgar-control-plane`, `yadgar-worker`, `yadgar-worker2` |
-| Ports | 18080→80, 18443→443, on the control-plane node (kind has no separate load balancer node) |
-| kubeconfig | `~/.kube/config`, written directly as `max`. No copy or chown. |
-| Ingress | **none bundled.** kind ships no ingress controller, so Argo CD's ingress story is a clean slate. |
+|            |                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------ |
+| Kubernetes | **v1.36.1, upstream** — kubeadm, containerd 2.3.1. Not k3s.                                      |
+| Nodes      | `yadgar-control-plane`, `yadgar-worker`, `yadgar-worker2`                                        |
+| Ports      | 18080→80, 18443→443, on the control-plane node (kind has no separate load balancer node)         |
+| kubeconfig | `~/.kube/config`, written directly as `max`. No copy or chown.                                   |
+| Ingress    | **none bundled.** kind ships no ingress controller, so Argo CD's ingress story is a clean slate. |
 
 **Three nodes, deliberately.** A single-node cluster schedules every replica onto
 one kubelet, which reproduces the single-process blind spot D55 exists to
@@ -66,7 +66,7 @@ Recorded because it cost a day and the failure is not obvious.
 
 k3d on this host died in two stages. First, its tools node hardcodes a bind mount
 of `/var/run/docker.sock`, which rootless podman has not got and cannot create.
-Pointing k3d at a *rootful* podman socket cleared that — and was **necessary but
+Pointing k3d at a _rootful_ podman socket cleared that — and was **necessary but
 not sufficient**. Underneath sat a rootful-podman bridge networking failure:
 agents could never register, because containers on that bridge could not reach
 even their own gateway (100% packet loss to `10.89.0.1` from inside a node, while
@@ -110,14 +110,14 @@ privilege inside `yadgar` — worse than where it started.
 None of these is yadgar code, which is why no repository here corresponds to
 them. Argo installs them from upstream charts.
 
-| Workload | Chart | Source | What it is |
-|---|---|---|---|
-| `mariadb-operator` | `mariadb-operator` | helm.mariadb.com | Reconciles `MariaDB` resources into real instances — what makes D58's per-module databases declarative |
-| `mariadb-operator-webhook` | same | same | Admission webhook validating `MariaDB` resources |
-| `mariadb-operator-cert-controller` | same | same | Issues and rotates the webhook's certs, so cert-manager is not a dependency |
-| `nats-0` | `nats` | nats-io.github.io | The JetStream server (D22) |
-| `valkey-primary` + replicas | `valkey` | Bitnami | The one shared cache (D21) |
-| `local-path-provisioner` | — | **kind itself** | Default StorageClass. Not deployed by this repo. |
+| Workload                           | Chart              | Source            | What it is                                                                                             |
+| ---------------------------------- | ------------------ | ----------------- | ------------------------------------------------------------------------------------------------------ |
+| `mariadb-operator`                 | `mariadb-operator` | helm.mariadb.com  | Reconciles `MariaDB` resources into real instances — what makes D58's per-module databases declarative |
+| `mariadb-operator-webhook`         | same               | same              | Admission webhook validating `MariaDB` resources                                                       |
+| `mariadb-operator-cert-controller` | same               | same              | Issues and rotates the webhook's certs, so cert-manager is not a dependency                            |
+| `nats-0`                           | `nats`             | nats-io.github.io | The JetStream server (D22)                                                                             |
+| `valkey-primary` + replicas        | `valkey`           | Bitnami           | The one shared cache (D21)                                                                             |
+| `local-path-provisioner`           | —                  | **kind itself**   | Default StorageClass. Not deployed by this repo.                                                       |
 
 `nats-box` is disabled. It is a shell with the NATS CLI in it — a debugging
 convenience rather than part of the system, and `kubectl run` covers the same
@@ -125,23 +125,23 @@ need on the rare occasion it arises.
 
 ## What is here
 
-| Path | |
-|---|---|
-| `infra/apps.yaml` | app-of-apps entry point for everything that is not Argo itself |
-| `infra/mariadb-operator-crds.yaml` | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
-| `infra/mariadb-operator.yaml` | per-module database instances, credentials and backups (D58) |
-| `infra/valkey-app.yaml` + `infra/valkey/` | one shared cache (D21), hand-written rather than a chart |
-| `infra/nats.yaml` | JetStream, asynchronous work only (D22) |
+| Path                                      |                                                                                                  |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `infra/apps.yaml`                         | app-of-apps entry point for everything that is not Argo itself                                   |
+| `infra/mariadb-operator-crds.yaml`        | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
+| `infra/mariadb-operator.yaml`             | per-module database instances, credentials and backups (D58)                                     |
+| `infra/valkey-app.yaml` + `infra/valkey/` | one shared cache (D21), hand-written rather than a chart                                         |
+| `infra/nats.yaml`                         | JetStream, asynchronous work only (D22)                                                          |
 
 ## Sync waves
 
-| Wave | |
-|---|---|
-| -20 | Argo's own root |
-| -15 | this app-of-apps |
-| -12 | CRDs — they must exist before the controller that watches them |
-| -10 | operators, cache, broker |
-| 10 | module services, via the ApplicationSet |
+| Wave |                                                                |
+| ---- | -------------------------------------------------------------- |
+| -20  | Argo's own root                                                |
+| -15  | this app-of-apps                                               |
+| -12  | CRDs — they must exist before the controller that watches them |
+| -10  | operators, cache, broker                                       |
+| 10   | module services, via the ApplicationSet                        |
 
 Ordering is what an umbrella chart would have given for free, and paying for it
 here is the accepted cost of D54.
