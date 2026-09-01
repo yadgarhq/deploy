@@ -35,7 +35,7 @@ Everything in the cluster is GitOps, so Argo rebuilds it — but two things do n
 come back on their own:
 
 - **the Argo CD install itself**: `make bootstrap` (needs `GITHUB_TOKEN`)
-- **the CA secret**: step 3 below, from 1Password
+- **the CA secret**: step 3 of "The development TLS edge" below, from 1Password
 
 That second one is the external-CA decision paying for itself. A root minted
 inside the cluster by a SelfSigned issuer would have been regenerated here, and
@@ -390,8 +390,10 @@ security.pki.certificateFiles = [
 ];
 ```
 
-The `networking.hosts` entry in that file already names both hostnames after the
-nix commit that accompanies this change, so nothing there needs editing.
+The `networking.hosts` entry in that file already names both hostnames — the nix
+commit that accompanies this change adds `gateway.yadgar.test` beside the old one
+— so nothing there needs editing. If that commit is not on `master` yet, add the
+name by hand rather than skipping the step.
 
 ```bash
 sudo nixos-rebuild switch
