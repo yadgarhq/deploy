@@ -19,18 +19,33 @@ metadata:
 spec:
   secretName: gateway-tls
 
-  # .localhost, deliberately. RFC 6761 reserves it and guarantees loopback
-  # resolution. NOT .local, which RFC 6762 reserves for mDNS — Avahi and
+  # .test, and the change away from .localhost was forced by measurement.
+  #
+  # RFC 6761 reserves BOTH, but it reserves them for opposite behaviours. For
+  # .localhost §6.3.3 tells resolvers to "always return the IP loopback address",
+  # so no client on another machine can ever reach a .localhost name — an
+  # /etc/hosts entry pointing gateway.yadgar.localhost at this host's bridge
+  # address 192.168.122.1 was IGNORED from a Debian VM, and curl tried [::1] and
+  # 127.0.0.1 instead. For .test §6.2.3 says the opposite: send the query to the
+  # configured caching DNS server. Nothing forces .test to loopback, so it can
+  # resolve wherever the local network says. Confirmed on this host:
+  # `resolvectl query gateway.yadgar.localhost` answers 127.0.0.1 marked
+  # "Data from: synthetic", while `resolvectl query gateway.yadgar.test` returns
+  # a plain not-found — no synthesis, an ordinary name.
+  #
+  # STILL NOT .local, which RFC 6762 reserves for mDNS — Avahi and
   # systemd-resolved intercept that, and the resulting failures read as a cluster
   # problem rather than a naming one.
   #
   # The name must also satisfy the root's nameConstraints extension, which
-  # permits only DNS names under yadgar.localhost. A name outside that is
-  # rejected at verification even though signing succeeds, so this list and the
-  # constraint in MIGRATION_NOTES step 1 have to agree.
+  # permits only DNS names under yadgar.test. A name outside that is rejected at
+  # verification even though signing succeeds, so this list and the constraint in
+  # MIGRATION_NOTES have to agree — and the root that carries the OLD constraint
+  # cannot sign this name usefully, which is why the CA is reissued BEFORE this
+  # merges.
   dnsNames:
-    - gateway.yadgar.localhost
-  commonName: gateway.yadgar.localhost
+    - gateway.yadgar.test
+  commonName: gateway.yadgar.test
 
   duration: 2160h # 90d, cert-manager's default, stated rather than implied
   renewBefore: 720h # 30d

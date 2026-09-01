@@ -14,7 +14,13 @@
 # `hostname` is what the certificate is issued for and what the root's
 # nameConstraints extension permits. All three have to agree — the certificate's
 # dnsNames, this hostname, and the CA's constraint — or verification fails after
-# signing succeeds, which is a confusing place to discover a typo.
+# signing succeeds, which is a confusing place to discover a typo. A fourth place
+# agrees with them from another repository: `gateway.hostname` in the gateway
+# chart, which is the hostname on the HTTPRoute that attaches here.
+#
+# .test rather than .localhost, because RFC 6761 forces .localhost to loopback and
+# that leaves an off-host client no path in at all. The reasoning is recorded in
+# full on the Certificate beside this file.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -36,7 +42,7 @@ spec:
     - name: https
       protocol: HTTPS
       port: 443
-      hostname: gateway.yadgar.localhost
+      hostname: gateway.yadgar.test
       tls:
         mode: Terminate
         certificateRefs:
