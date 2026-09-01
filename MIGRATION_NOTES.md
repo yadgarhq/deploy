@@ -332,7 +332,7 @@ cluster that reports healthy while serving a certificate nothing trusts:
 - **cert-manager's CA issuer does not enforce the issuing root's
   `nameConstraints`.** Its own documentation says so, under "Important
   Information" in <https://cert-manager.io/docs/configuration/ca/>: _"Other
-  constraints - such as name constraints or the CA 'max path length' - are not
+  constraints - such as name constraints or the CA "max path length" - are not
   validated at the time of issuance"_. Asked for `gateway.yadgar.test` while the
   old root is still installed, it SIGNS — successfully, with no error,
   Certificate `Ready=True`, Gateway `Programmed=True`. Every client then rejects
@@ -473,21 +473,21 @@ kubectl --context kind-yadgar create secret tls yadgar-dev-ca \
 
 **Read the constraint back out of the cluster.** This is the check that fails
 when the wrong material was loaded — a reloaded old root, or an `op read`
-pointed at the wrong item. It greps the constraint's VALUE, not its heading, so
-it exits non-zero on the wrong root instead of printing something for a human to
-misread:
+pointed at the wrong item. It greps the constraint's VALUE rather than the
+`X509v3 Name Constraints` heading, which is present either way, so it exits
+non-zero on the wrong root instead of printing something for a human to misread:
 
 ```bash
 kubectl --context kind-yadgar -n cert-manager get secret yadgar-dev-ca \
   -o jsonpath='{.data.tls\.crt}' | base64 -d \
   | openssl x509 -noout -text \
-  | grep -A3 "X509v3 Name Constraints" \
-  | grep "DNS:yadgar\.test"     # must print `Permitted: DNS:yadgar.test`
+  | grep "DNS:yadgar\.test"
 ```
 
-Nothing printed, or a non-zero exit, means the old root is still in there. Load
-the right material before going any further — the whole sequence is built on this
-one object holding the new root.
+The certificate carries exactly one permitted DNS name, so one matching line is
+the pass and nothing is the fail. Nothing printed, or a non-zero exit, means the
+old root is still in there. Load the right material before going any further —
+the whole sequence is built on this one object holding the new root.
 
 Then destroy the local copies — 1Password is the durable one:
 
