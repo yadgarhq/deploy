@@ -312,7 +312,8 @@ was carried into D71, `enrolment-token-design.md` and two pull requests.
 resolves for some clients and not for others on the same machine.** A name that
 works under `wget` and Python but never under `curl` is harder to diagnose than
 one that fails everywhere, and `curl` is the first tool anyone reaches for —
-every check in this file is a `curl`. A development domain whose behaviour
+every off-host reachability check in this file goes through `curl`. A
+development domain whose behaviour
 depends on which HTTP client the reader picked is not one to hand to a person
 enrolling for the first time.
 
