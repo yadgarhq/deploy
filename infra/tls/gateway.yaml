@@ -18,10 +18,14 @@
 # agrees with them from another repository: `gateway.hostname` in the gateway
 # chart, which is the hostname on the HTTPRoute that attaches here.
 #
-# .test rather than .localhost, because every resolver measured here sends
-# .localhost to loopback — RFC 6761 §6.3.3 asks them to, and they do — and that
-# leaves an off-host client no path in at all. The reasoning, and the measurement
-# it rests on, are recorded in full on the Certificate beside this file.
+# .internal rather than .localhost, because .localhost does not fail cleanly:
+# RFC 6761 §6.3.3 asks resolvers to send it to loopback, and clients on one
+# machine disagree about whether to. Measured off-host, getent, Python and wget
+# reached the gateway through a .localhost name while curl did not — curl
+# implements §6.3.3 itself and never consults NSS. .internal is reserved by ICANN
+# from the DNS root zone for private use and is special-cased by nothing. The
+# reasoning, and the measurement it rests on, are recorded in full on the
+# Certificate beside this file.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
