@@ -22,13 +22,15 @@ spec:
   # .test, and the change away from .localhost was forced by measurement.
   #
   # RFC 6761 reserves BOTH, but it reserves them for opposite behaviours. For
-  # .localhost §6.3.3 tells resolvers to "always return the IP loopback address",
-  # so no client on another machine can ever reach a .localhost name — an
-  # /etc/hosts entry pointing gateway.yadgar.localhost at this host's bridge
-  # address 192.168.122.1 was IGNORED from a Debian VM, and curl tried [::1] and
-  # 127.0.0.1 instead. For .test §6.2.3 says the opposite: send the query to the
-  # configured caching DNS server. Nothing forces .test to loopback, so it can
-  # resolve wherever the local network says. Confirmed on this host:
+  # .localhost §6.3.3 says resolvers "SHOULD always return the IP loopback
+  # address"; for .test §6.2.3 says the opposite, send the query to the
+  # configured caching DNS server. Both are SHOULDs, so a conforming resolver is
+  # permitted to do neither and the argument rests on measurement, not on the
+  # text. Measured: from a Debian 13 guest, curl for gateway.yadgar.localhost
+  # resolved to ::1 and 127.0.0.1 and was refused by both, even with an
+  # /etc/hosts entry naming this host's bridge address 192.168.122.1 — and no
+  # query for that name left the guest at all. A .test name on the same guest
+  # went out to the network resolver. On this host,
   # `resolvectl query gateway.yadgar.localhost` answers 127.0.0.1 marked
   # "Data from: synthetic", while `resolvectl query gateway.yadgar.test` returns
   # a plain not-found — no synthesis, an ordinary name.

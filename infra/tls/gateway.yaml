@@ -18,9 +18,10 @@
 # agrees with them from another repository: `gateway.hostname` in the gateway
 # chart, which is the hostname on the HTTPRoute that attaches here.
 #
-# .test rather than .localhost, because RFC 6761 forces .localhost to loopback and
-# that leaves an off-host client no path in at all. The reasoning is recorded in
-# full on the Certificate beside this file.
+# .test rather than .localhost, because every resolver measured here sends
+# .localhost to loopback — RFC 6761 §6.3.3 asks them to, and they do — and that
+# leaves an off-host client no path in at all. The reasoning, and the measurement
+# it rests on, are recorded in full on the Certificate beside this file.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
