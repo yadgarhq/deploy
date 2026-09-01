@@ -30,7 +30,7 @@ spec:
   ca:
     # Created by hand from 1Password. Absent until step 3 of "The development
     # TLS edge" in MIGRATION_NOTES has run — and replaced, not re-created, by
-    # step 4 of "Move the development domain to yadgar.test". Until the first of
-    # those has run this issuer reports NotReady — which is the correct
+    # step 4 of "Move the development domain to yadgar.internal". Until the
+    # first of those has run this issuer reports NotReady — which is the correct
     # loud failure rather than a silent fallback to an untrusted certificate.
     secretName: yadgar-dev-ca

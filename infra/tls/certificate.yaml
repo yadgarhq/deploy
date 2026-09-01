@@ -19,35 +19,43 @@ metadata:
 spec:
   secretName: gateway-tls
 
-  # .test, and the change away from .localhost was forced by measurement.
+  # .internal, and the change away from .localhost was forced by measurement.
   #
-  # RFC 6761 reserves BOTH, but it reserves them for opposite behaviours. For
-  # .localhost §6.3.3 says resolvers "SHOULD always return the IP loopback
-  # address"; for .test §6.2.3 says the opposite, send the query to the
-  # configured caching DNS server. Both are SHOULDs, so a conforming resolver is
-  # permitted to do neither and the argument rests on measurement, not on the
-  # text. Measured: from a Debian 13 guest, curl for gateway.yadgar.localhost
-  # resolved to ::1 and 127.0.0.1 and was refused by both, even with an
-  # /etc/hosts entry naming this host's bridge address 192.168.122.1 — and no
-  # query for that name left the guest at all. A .test name on the same guest
-  # went out to the network resolver. On this host,
-  # `resolvectl query gateway.yadgar.localhost` answers 127.0.0.1 marked
-  # "Data from: synthetic", while `resolvectl query gateway.yadgar.test` returns
-  # a plain not-found — no synthesis, an ordinary name.
+  # .localhost does not fail cleanly, and that is the problem with it. RFC 6761
+  # §6.3.3 says name resolution APIs "SHOULD always return the IP loopback
+  # address" for .localhost names. It is a SHOULD, and clients on one machine
+  # honour it differently. Measured on a Debian 13 guest with an /etc/hosts
+  # entry naming this host's bridge address 192.168.122.1: `getent ahosts`,
+  # Python's getaddrinfo and `wget` all resolved gateway.yadgar.localhost to
+  # 192.168.122.1, and wget reached the gateway with the CA supplied and no
+  # verification skipped (405). curl 8.14.1 returned loopback for the same name
+  # on the same machine — it implements §6.3.3 itself and never consults NSS.
+  # So the name resolves for some clients and not for others, and the client it
+  # fails under is curl, which is the first tool anyone reaches for to diagnose
+  # it. A name that fails cleanly everywhere would be easier to live with.
+  #
+  # .internal is reserved by ICANN Board Resolution 2024.07.29.06 (2024-07-29),
+  # which withholds it from delegation in the DNS root zone permanently for
+  # private-use applications. It is NOT an IETF special-use domain — no RFC
+  # assigns it, and it is absent from IANA's Special-Use Domain Names registry —
+  # so NO RESOLVER GIVES IT SPECIAL TREATMENT. That is the property .localhost
+  # lacked and the whole reason for choosing it. .test, the earlier candidate,
+  # actually has the stronger protocol backing (RFC 6761 §6.2); it loses on
+  # being documented as a name for throwaway testing.
   #
   # STILL NOT .local, which RFC 6762 reserves for mDNS — Avahi and
   # systemd-resolved intercept that, and the resulting failures read as a cluster
   # problem rather than a naming one.
   #
   # The name must also satisfy the root's nameConstraints extension, which
-  # permits only DNS names under yadgar.test. A name outside that is rejected at
-  # verification even though signing succeeds, so this list and the constraint in
-  # MIGRATION_NOTES have to agree — and the root that carries the OLD constraint
-  # cannot sign this name usefully, which is why the CA is reissued BEFORE this
-  # merges.
+  # permits only DNS names under yadgar.internal. A name outside that is
+  # rejected at verification even though signing succeeds, so this list and the
+  # constraint in MIGRATION_NOTES have to agree — and the root that carries the
+  # OLD constraint cannot sign this name usefully, which is why the CA is
+  # reissued BEFORE this merges.
   dnsNames:
-    - gateway.yadgar.test
-  commonName: gateway.yadgar.test
+    - gateway.yadgar.internal
+  commonName: gateway.yadgar.internal
 
   duration: 2160h # 90d, cert-manager's default, stated rather than implied
   renewBefore: 720h # 30d

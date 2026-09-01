@@ -43,7 +43,7 @@ spec:
     - name: https
       protocol: HTTPS
       port: 443
-      hostname: gateway.yadgar.test
+      hostname: gateway.yadgar.internal
       tls:
         mode: Terminate
         certificateRefs:

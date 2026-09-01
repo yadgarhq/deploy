@@ -145,18 +145,18 @@ openssl req -x509 -new -nodes -key yadgar-dev-ca.key -sha256 -days 3650 \
   -subj "/CN=yadgar development root CA/O=yadgar" \
   -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
   -addext "keyUsage=critical,keyCertSign,cRLSign" \
-  -addext "nameConstraints=critical,permitted;DNS:yadgar.test,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::"
+  -addext "nameConstraints=critical,permitted;DNS:yadgar.internal,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::"
 ```
 
 **The `nameConstraints` line is the important one and is easy to leave out.**
 This root goes into the system trust store, and its private key then lives in a
 kind cluster. Without constraints, anything holding that key can mint a
 trusted certificate for _any_ hostname — your bank, your registry, your identity
-provider. Constrained, it can only sign names under `yadgar.test`, so the
+provider. Constrained, it can only sign names under `yadgar.internal`, so the
 blast radius of a leaked development key is the development environment.
 
-`yadgar.test`, not `yadgar.localhost`, and that is a correction rather than a
-preference — see "Move the development domain to `yadgar.test`" below for the
+`yadgar.internal`, not `yadgar.localhost`, and that is a correction rather than a
+preference — see "Move the development domain to `yadgar.internal`" below for the
 measurement that forced it.
 
 The IP exclusions are there because name constraints apply per name type:
@@ -235,13 +235,14 @@ than to `deploy`. Commit the **certificate only**.
 {
   security.pki.certificateFiles = [ ./yadgar-dev-ca.crt ];
 
-  # RFC 6761 reserves .test for testing and, unlike .localhost, does NOT force
-  # it to loopback — so the same name can point at 127.0.0.1 here and at this
-  # host's bridge address from a VM. Deliberately NOT .local, which RFC 6762
-  # reserves for mDNS — Avahi and systemd-resolved intercept it, and the
-  # resulting resolution failures look like a cluster problem rather than a
-  # naming one.
-  networking.hosts."127.0.0.1" = [ "gateway.yadgar.test" ];
+  # .internal is reserved by ICANN (Board Resolution 2024.07.29.06) for
+  # private use and no resolver treats it specially — so, unlike .localhost, the
+  # same name can point at 127.0.0.1 here and at this host's bridge address from
+  # a VM, with no client quietly deciding otherwise. Deliberately NOT .local,
+  # which RFC 6762 reserves for mDNS — Avahi and systemd-resolved intercept it,
+  # and the resulting resolution failures look like a cluster problem rather
+  # than a naming one.
+  networking.hosts."127.0.0.1" = [ "gateway.yadgar.internal" ];
 }
 ```
 
@@ -250,7 +251,7 @@ Apply it yourself — `nixos-rebuild` is not run from here.
 ### 5. Check it end to end
 
 ```bash
-curl -v https://gateway.yadgar.test:18443/  # port 18443, per kind's mapping
+curl -v https://gateway.yadgar.internal:18443/  # port 18443, per kind's mapping
 ```
 
 A verified handshake with no `-k` is the pass condition. `-k` passing proves
@@ -267,57 +268,116 @@ If that succeeds, the certificate is not the one you think it is.
 
 ---
 
-## Move the development domain to `yadgar.test` (ledger 459)
+## Move the development domain to `yadgar.internal` (ledger 459)
 
 Applies to an **existing** installation. A first-time setup follows the section
 above, which already carries the new name and needs none of this.
 
 ### Why the name had to change, measured rather than assumed
 
-`gateway.yadgar.localhost` cannot be reached from any machine except this one,
-and no firewall rule fixes it. RFC 6761 §6.3.3 says name resolution APIs "SHOULD
+**`gateway.yadgar.localhost` does not fail cleanly.** A name that failed cleanly
+would have been easier to keep. RFC 6761 §6.3.3 says name resolution APIs "SHOULD
 recognize localhost names as special and SHOULD always return the IP loopback
-address". **SHOULD, not MUST** — a conforming resolver is permitted to do
-otherwise, so the argument rests on the measurement below rather than on the
-text. Every resolver in play does implement it. Measured on a Debian 13 guest
-(glibc 2.41, systemd-resolved) at `192.168.122.101`:
+address". **SHOULD, not MUST** — and clients on one machine do not agree about
+it, which is what the measurement below shows and what the text cannot.
+
+Measured on a fresh Debian 13 guest (glibc 2.41, systemd-resolved) at
+`192.168.122.101`, whose `/etc/hosts` points `gateway.yadgar.localhost` at this
+host's bridge address `192.168.122.1`:
 
 ```bash
-curl -v https://gateway.yadgar.localhost:18443/
-#   resolved to ::1 and 127.0.0.1, refused by both — even though the guest's
-#   /etc/hosts points that name at this host's bridge address 192.168.122.1
+getent ahosts gateway.yadgar.localhost      # 192.168.122.1
+python3 -c 'import socket; print(socket.getaddrinfo("gateway.yadgar.localhost", 18443))'
+#   192.168.122.1
 
-resolvectl query probe.yadgar.localhost   # 127.0.0.1, ::1 — link: lo
-#   with `resolvectl statistics` reporting Total Transactions UNCHANGED across
-#   it: no query for a .localhost name ever leaves the guest
+wget --ca-certificate=/root/yadgar-ca.crt https://gateway.yadgar.localhost:18443/
+#   405 Method Not Allowed — it reached the gateway, verifying, with no -k
+
+curl -v https://gateway.yadgar.localhost:18443/
+#   resolved to ::1 and 127.0.0.1, refused by both
 ```
 
-The `/etc/hosts` entry is not ignored by every path — `getent ahosts` does
-return `192.168.122.1` for the name. `getaddrinfo`, which is what `curl` calls,
-returns loopback regardless, so the address a client actually connects to is
-loopback. That is the only part that matters here.
+**The `/etc/hosts` entry is honoured, and `curl` is the outlier.** curl 8.14.1
+implements §6.3.3's SHOULD internally and never consults NSS, so it answers
+loopback for a `.localhost` name whatever the system is configured to say. `wget`
+and Python ask NSS and get the bridge address.
+
+**An earlier revision of this section claimed the opposite, and the claim was
+false.** It said `getaddrinfo` returns loopback regardless and that no client on
+another machine can therefore reach the gateway. Every piece of evidence for that
+came from `curl`. Corrected here rather than deleted, because the wrong version
+was carried into D71, `enrolment-token-design.md` and two pull requests.
+
+**The surviving reason to move is narrower and still sufficient: `.localhost`
+resolves for some clients and not for others on the same machine.** A name that
+works under `wget` and Python but never under `curl` is harder to diagnose than
+one that fails everywhere, and `curl` is the first tool anyone reaches for —
+every check in this file is a `curl`. A development domain whose behaviour
+depends on which HTTP client the reader picked is not one to hand to a person
+enrolling for the first time.
 
 Connecting by address instead is not an option and cannot be made into one. Envoy
 requires SNI matching the listener hostname, and the root CA excludes every IP
 address by constraint, so a certificate for a bare address cannot be issued at
-all. Both behaviours are correct on their own. Together they leave an off-host
-client no path in.
+all. Both behaviours are correct on their own.
 
-`.test` is reserved by the same RFC for the opposite behaviour. §6.2.3 says name
-resolution APIs "SHOULD NOT recognize test names as special" and "SHOULD send
-queries for test names to their configured caching DNS server(s)" — nothing
-anywhere in §6.2 sends `.test` to loopback. These are SHOULDs too, so the same
-caveat applies, and the same answer: confirmed on this host rather than taken
-from the text.
+### Why `.internal`, and what it is and is not
+
+`.internal` is reserved by **ICANN Board Resolution 2024.07.29.06** (29 July
+2024): _"the Board reserves .INTERNAL from delegation in the DNS root zone
+permanently to provide for its use in private-use applications."_ It implements
+SSAC advisory SAC113.
+
+**It is NOT an IETF special-use domain, and calling it one is wrong.**
+`draft-davies-internal-tld` was never adopted — DNSOP's Call for Adoption closed
+with no consensus — and `.internal` is absent from IANA's Special-Use Domain
+Names registry. `.test` is in that registry, so `.test` carries the stronger
+protocol backing of the two; it loses on being documented as a name for
+throwaway testing, which this is not.
+
+**That absence is the point.** No resolver gives `.internal` special treatment,
+which is exactly the property `.localhost` lacked. There is no §6.3.3 for a
+client to implement privately and no §6.2.4 negative-answer synthesis for a
+caching resolver to apply, so the local network decides where the name goes and
+nothing else quietly decides first.
+
+**A private CA stays mandatory, and the `nameConstraints` plan is unaffected.**
+The CA/Browser Forum Baseline Requirements define an Internal Name as one that
+"cannot be verified as globally unique within the public DNS at the time of
+certificate issuance because it does not end with a Top-Level Domain registered
+in IANA's Root Zone Database", and prohibit publicly trusted CAs from issuing for
+such names. No public CA can issue for `gateway.yadgar.internal` by structure,
+not by policy preference, so the root minted below is not a shortcut around one.
+
+**One operational wart, and it is not a resolution failure.** Chromium and Safari
+have historically sent bare, schemeless `.internal` input in the address bar to
+search rather than navigating to it (Chromium issue 375219954). An explicit
+`https://` or a trailing `/` navigates. The current status in either browser is
+unconfirmed here.
+
+**Source caveat — confirm this one by hand.** `icann.org` returned HTTP 403 to
+two direct fetch attempts, so the resolution wording above was corroborated
+through search indexing and secondary sources rather than read off a rendered
+ICANN page. Number, date and wording agree across those sources, and the IANA
+registry, the CA/Browser Forum definition and the DNSOP non-adoption were each
+read directly. The ICANN quote is the one claim here still owed a manual check.
+
+**Still not `.local`**, which RFC 6762 reserves for mDNS — Avahi and
+systemd-resolved intercept it, and the resulting failures read as a cluster
+problem rather than a naming one.
+
+On this host:
 
 ```bash
 resolvectl query gateway.yadgar.localhost   # 127.0.0.1, "Data from: synthetic"
-resolvectl query gateway.yadgar.test        # Name not found — an ordinary name
+resolvectl query gateway.yadgar.internal    # Name not found — an ordinary name
 ```
 
 The first is synthesised by the resolver, and no local configuration observed
 here moves it. The second is a name the resolver is willing to look up, so
-`/etc/hosts` or a DNS record decides where it goes.
+`/etc/hosts` or a DNS record decides where it goes. The `.localhost` line was
+measured; the `.internal` line was not re-run after the name changed, and it is
+the cheapest thing in this section to check.
 
 ### THE ORDER IS THE WHOLE PROCEDURE — read this before running anything
 
@@ -333,7 +393,7 @@ cluster that reports healthy while serving a certificate nothing trusts:
   `nameConstraints`.** Its own documentation says so, under "Important
   Information" in <https://cert-manager.io/docs/configuration/ca/>: _"Other
   constraints - such as name constraints or the CA "max path length" - are not
-  validated at the time of issuance"_. Asked for `gateway.yadgar.test` while the
+  validated at the time of issuance"_. Asked for `gateway.yadgar.internal` while the
   old root is still installed, it SIGNS — successfully, with no error,
   Certificate `Ready=True`, Gateway `Programmed=True`. Every client then rejects
   the result for a permitted-subtree violation. The cluster looks correct and
@@ -358,7 +418,7 @@ margin before opening the window.
 
 ### 1. Mint the new root
 
-Same extensions as the original, one word different — `yadgar.test` in the
+Same extensions as the original, one word different — `yadgar.internal` in the
 constraint.
 
 **`openssl` is not installed on this host**, and steps 1 and 4 both need it. Get
@@ -378,10 +438,10 @@ openssl req -x509 -new -nodes -key yadgar-dev-ca.key -sha256 -days 3650 \
   -subj "/CN=yadgar development root CA/O=yadgar" \
   -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
   -addext "keyUsage=critical,keyCertSign,cRLSign" \
-  -addext "nameConstraints=critical,permitted;DNS:yadgar.test,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::"
+  -addext "nameConstraints=critical,permitted;DNS:yadgar.internal,excluded;IP:0.0.0.0/0.0.0.0,excluded;IP:::/::"
 ```
 
-**The constraint permits `yadgar.test` and nothing else.** Not both names.
+**The constraint permits `yadgar.internal` and nothing else.** Not both names.
 Widening it to permit the old subtree as well would make the rollover marginally
 simpler and leave a permanently looser control behind, and the constraint is the
 whole security argument for putting this root in a system trust store (D71). The
@@ -401,12 +461,12 @@ items cannot share one.
 
 ```bash
 op item create --category "Secure Note" --vault Private \
-  --title yadgar-dev-ca-test \
+  --title yadgar-dev-ca-internal \
   "private key[password]=$(cat yadgar-dev-ca.key)" \
   "certificate[text]=$(cat yadgar-dev-ca.crt)"
 
-op read "op://Private/yadgar-dev-ca-test/private key" | head -1   # BEGIN PRIVATE KEY
-op read "op://Private/yadgar-dev-ca-test/certificate" | head -1   # BEGIN CERTIFICATE
+op read "op://Private/yadgar-dev-ca-internal/private key" | head -1   # BEGIN PRIVATE KEY
+op read "op://Private/yadgar-dev-ca-internal/certificate" | head -1   # BEGIN CERTIFICATE
 ```
 
 Step 7 renames it to `yadgar-dev-ca` once the old root is retired.
@@ -417,7 +477,7 @@ Step 7 renames it to `yadgar-dev-ca` once the old root is retired.
 rollover has no outage. Commit the new certificate beside the old one:
 
 ```bash
-cp yadgar-dev-ca.crt ~/git/nix/modules/nixos/certs/yadgar-dev-ca-test.crt
+cp yadgar-dev-ca.crt ~/git/nix/modules/nixos/certs/yadgar-dev-ca-internal.crt
 ```
 
 Then, in `modules/nixos/yadgar-dev-tls.nix`, list both — temporarily:
@@ -425,12 +485,12 @@ Then, in `modules/nixos/yadgar-dev-tls.nix`, list both — temporarily:
 ```nix
 security.pki.certificateFiles = [
   ./certs/yadgar-dev-ca.crt       # old root, DNS:yadgar.localhost — DELETE at step 7
-  ./certs/yadgar-dev-ca-test.crt  # new root, DNS:yadgar.test
+  ./certs/yadgar-dev-ca-internal.crt  # new root, DNS:yadgar.internal
 ];
 ```
 
 The `networking.hosts` entry in that file already names both hostnames — the nix
-commit that accompanies this change adds `gateway.yadgar.test` beside the old one
+commit that accompanies this change adds `gateway.yadgar.internal` beside the old one
 — so nothing there needs editing. If that commit is not on `master` yet, add the
 name by hand rather than skipping the step.
 
@@ -467,8 +527,8 @@ kubectl --context kind-yadgar -n cert-manager delete secret yadgar-dev-ca
 
 kubectl --context kind-yadgar create secret tls yadgar-dev-ca \
   --namespace cert-manager \
-  --cert <(op read "op://Private/yadgar-dev-ca-test/certificate") \
-  --key  <(op read "op://Private/yadgar-dev-ca-test/private key")
+  --cert <(op read "op://Private/yadgar-dev-ca-internal/certificate") \
+  --key  <(op read "op://Private/yadgar-dev-ca-internal/private key")
 ```
 
 **Read the constraint back out of the cluster.** This is the check that fails
@@ -481,7 +541,7 @@ non-zero on the wrong root instead of printing something for a human to misread:
 kubectl --context kind-yadgar -n cert-manager get secret yadgar-dev-ca \
   -o jsonpath='{.data.tls\.crt}' | base64 -d \
   | openssl x509 -noout -text \
-  | grep "DNS:yadgar\.test"
+  | grep "DNS:yadgar\.internal"
 ```
 
 The certificate carries exactly one permitted DNS name, so one matching line is
@@ -522,7 +582,7 @@ Two pull requests, and they are one change:
 
 Merging `deploy` changes the Certificate spec, which is exactly the trigger
 cert-manager reissues on. Within a couple of minutes the gateway serves a
-certificate for `gateway.yadgar.test` signed by the new root.
+certificate for `gateway.yadgar.internal` signed by the new root.
 
 **`gateway.yadgar.localhost` stops working at this instant, permanently.** The
 name is no longer in the SAN and no longer matches the listener's SNI, so a
@@ -551,33 +611,36 @@ kubectl --context kind-yadgar -n yadgar get secret gateway-tls \
   -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
 
-curl -v https://gateway.yadgar.test:18443/
+curl -v https://gateway.yadgar.internal:18443/
 ```
 
 A verified handshake with no `-k` is the pass condition, and 405 rather than 404
 means the route attached as well as the listener. `-k` passing proves nothing,
 since it is the check being skipped.
 
-**Then from a guest, and this one is the real gate.** Off-host reachability is
-the entire reason for the change, and the host check does not exercise it — the
-host reached the old name too. Put the new root on the guest first; it is public
-material, so copying it is fine:
+**Then from a guest, and this one is the real gate.** The change exists so that
+one name behaves the same way for every client on every machine, and the host
+check does not exercise that — the host reached the old name too, and under
+`curl`, which is the client the old name failed for off-host. Put the new root on
+the guest first; it is public material, so copying it is fine:
 
 ```bash
-op read "op://Private/yadgar-dev-ca-test/certificate" \
+op read "op://Private/yadgar-dev-ca-internal/certificate" \
   | ssh root@192.168.122.101 'cat > /root/yadgar-ca.crt'
 ```
 
 Then, on the guest at `192.168.122.101`:
 
 ```bash
-getent hosts gateway.yadgar.test        # 192.168.122.1
-curl -v --cacert /root/yadgar-ca.crt https://gateway.yadgar.test:18443/   # 405
+getent hosts gateway.yadgar.internal        # 192.168.122.1
+curl -v --cacert /root/yadgar-ca.crt https://gateway.yadgar.internal:18443/   # 405
 ```
 
-Both have to pass. `getent` returning nothing means the DNS record is missing or
-the guest's resolver is not forwarding `.test`; `curl` failing verification means
-the guest does not have the new root. Neither is a reason to reach for `-k`, and
+Both have to pass, and the `curl` is the one that matters: it is the client that
+returned loopback for the old name no matter what the guest resolved. `getent`
+returning nothing means the DNS record is missing or the guest's resolver is not
+forwarding `.internal`; `curl` failing verification means the guest does not have
+the new root. Neither is a reason to reach for `-k`, and
 neither is a reason to run step 7.
 
 **Prove the check can still fail**, per the invariant that a check which cannot
@@ -600,7 +663,7 @@ git rm modules/nixos/certs/yadgar-dev-ca.crt
 sudo nixos-rebuild switch
 
 # 1Password
-op item edit yadgar-dev-ca-test --title yadgar-dev-ca   # after deleting the old item
+op item edit yadgar-dev-ca-internal --title yadgar-dev-ca   # after deleting the old item
 ```
 
 ### Rolling back — put the old root back FIRST, then revert
@@ -608,11 +671,11 @@ op item edit yadgar-dev-ca-test --title yadgar-dev-ca   # after deleting the old
 **Reverting the two pull requests on their own does not roll anything back from
 step 4 onward. It makes things worse.** Step 4 replaces `secret/yadgar-dev-ca`
 in place, and `infra/tls/clusterissuer.yaml` still points at that one name, so
-after step 4 the only signing root in the cluster is the `.test`-constrained one.
+after step 4 the only signing root in the cluster is the `.internal`-constrained one.
 The old root was overwritten, not kept beside it. Reverting puts `.localhost`
 back in the Certificate's spec, which is exactly cert-manager's reissue trigger,
 so it signs `gateway.yadgar.localhost` under a root permitted only under
-`yadgar.test` — a permitted-subtree violation. Trusting both roots does not help:
+`yadgar.internal` — a permitted-subtree violation. Trusting both roots does not help:
 the certificate violates the constraint of the root that signed it. And the last
 leaf signed by the old root is already gone, overwritten by step 5's reissue. The
 result is a certificate that NEITHER name verifies against.
@@ -644,7 +707,8 @@ name. After step 7 there is no rollback, only a roll forward.
 
 ### Making the name resolve, on this host and on a VM
 
-`.test` has no public DNS and never will. Something local has to answer, and this
+`.internal` has no public DNS and never will — ICANN reserved it from the root
+zone permanently. Something local has to answer, and this
 is the part that is a choice rather than a consequence.
 
 **On this host** it is settled: `networking.hosts."127.0.0.1"` in
@@ -653,7 +717,7 @@ resolver. Already in the nix change that accompanies this.
 
 **On a VM**, three options, in the order they were considered:
 
-1. **`/etc/hosts` in each guest.** `192.168.122.1 gateway.yadgar.test`. Works
+1. **`/etc/hosts` in each guest.** `192.168.122.1 gateway.yadgar.internal`. Works
    unconditionally — `files` is consulted by glibc and read by systemd-resolved
    too, so no resolver behaviour can veto it. It is also the only option for a
    machine that is not on `virbr0`. The cost is a manual step in every guest,
@@ -670,7 +734,7 @@ resolver. Already in the nix change that accompanies this.
 
    ```bash
    resolvectl statistics | grep 'Total Transactions'   # 50
-   resolvectl query --cache=no probe-5030.yadgar.test  # not found
+   resolvectl query --cache=no probe-5030.yadgar.internal  # not found
    resolvectl statistics | grep 'Total Transactions'   # 52 — two queries went out
 
    resolvectl query --cache=no probe-5030.yadgar.localhost   # 127.0.0.1, ::1
@@ -678,21 +742,28 @@ resolver. Already in the nix change that accompanies this.
    ```
 
    **That counter is the whole point.** A `dig … @192.168.122.1` returning
-   NXDOMAIN would prove nothing on its own: RFC 6761 §6.2.4 lets a caching
-   resolver synthesise negative answers for `.test` by default, and that also
-   looks like NXDOMAIN. The transaction counter separates the two cases — the
-   `.test` query left the guest and reached dnsmasq, and the `.localhost` query
-   did not leave at all. Measured on this guest, and it is one guest: another
-   distribution with a resolver that does implement §6.2.4 would answer `.test`
-   negatively by itself. What is still unmeasured is whether dnsmasq answers the
-   ADDED record positively, because the record does not exist yet.
+   NXDOMAIN would prove nothing on its own — a caching resolver can synthesise a
+   negative answer locally, and that also looks like NXDOMAIN. The transaction
+   counter separates the two cases: the query left the guest and reached
+   dnsmasq, while the `.localhost` query did not leave at all.
+
+   **Read that measurement with one qualification.** It was taken with a `.test`
+   probe name, which was the candidate at the time, and it has not been re-run
+   under `.internal`. It transfers, and if anything it transfers upwards: RFC
+   6761 §6.2.4 explicitly permits a caching resolver to answer `.test` names
+   negatively by itself, so a different distribution could have made that
+   counter lie. Nothing grants `.internal` even that — no RFC covers it and it
+   is in no special-use registry — so there is no sanctioned local short-circuit
+   for a resolver to take. Re-run the block above with the `.internal` name
+   before relying on it. What is still unmeasured either way is whether dnsmasq
+   answers the ADDED record positively, because the record does not exist yet.
 
    **This is a state-mutating change to shared infrastructure. Run it yourself.**
    Use `net-update`, not `net-edit` — it needs no restart of the network:
 
    ```bash
    sudo virsh net-update default add dns-host \
-     "<host ip='192.168.122.1'><hostname>gateway.yadgar.test</hostname></host>" \
+     "<host ip='192.168.122.1'><hostname>gateway.yadgar.internal</hostname></host>" \
      --live --config
    ```
 
@@ -709,20 +780,20 @@ resolver. Already in the nix change that accompanies this.
    **This record is undeclared host state, and nothing in git records that it
    exists.** It survives a reboot — the `default` network is `Persistent: yes`
    and `Autostart: yes` — but it does not survive rebuilding the machine from the
-   nix repo, and a person rebuilding will find `.test` resolving from the host
+   nix repo, and a person rebuilding will find `.internal` resolving from the host
    and not from any guest, with nothing to grep for.
 
    Then verify from a guest, per step 6:
 
    ```bash
-   getent hosts gateway.yadgar.test        # 192.168.122.1
-   curl --cacert /root/yadgar-ca.crt https://gateway.yadgar.test:18443/   # 405
+   getent hosts gateway.yadgar.internal        # 192.168.122.1
+   curl --cacert /root/yadgar-ca.crt https://gateway.yadgar.internal:18443/   # 405
    ```
 
    If `getent` returns nothing, fall back to option 1 in that guest rather than
    debugging the resolver.
 
-3. **Rejected: a resolver on the host serving a `yadgar.test` zone.** A real
+3. **Rejected: a resolver on the host serving a `yadgar.internal` zone.** A real
    dnsmasq or CoreDNS instance is a second name service on a machine that already
    has one, configured for a single A record. libvirt's dnsmasq is already
    running, already authoritative for this network, and already the guests'
