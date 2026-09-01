@@ -8,7 +8,9 @@
 # applied before its definition exists is a hard sync failure, not something Argo
 # retries into place. Both of those land at -10.
 #
-# EXPECT THIS APPLICATION TO BE UNHEALTHY UNTIL MIGRATION_NOTES STEP 3 HAS RUN.
+# EXPECT THIS APPLICATION TO BE UNHEALTHY UNTIL STEP 3 OF "THE DEVELOPMENT TLS
+# EDGE" IN MIGRATION_NOTES.md HAS RUN. There is a second step 3, in "Move the
+# development domain to yadgar.internal"; that one is not this one.
 # The ClusterIssuer references a secret holding the CA private key, which is
 # created by hand from 1Password and is deliberately not in git. Until it exists
 # the issuer reports NotReady and the Certificate stays unissued. That is the
