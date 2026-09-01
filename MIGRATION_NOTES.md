@@ -233,7 +233,7 @@ than to `deploy`. Commit the **certificate only**.
 ```nix
 # modules/nixos/yadgar-dev-tls.nix (or wherever host config lives)
 {
-  security.pki.certificateFiles = [ ./yadgar-dev-ca.crt ];
+  security.pki.certificateFiles = [ ./certs/yadgar-dev-ca.crt ];
 
   # .internal is reserved by ICANN (Board Resolution 2024.07.29.06) for
   # private use and no resolver treats it specially — so, unlike .localhost, the
@@ -312,8 +312,9 @@ was carried into D71, `enrolment-token-design.md` and two pull requests.
 resolves for some clients and not for others on the same machine.** A name that
 works under `wget` and Python but never under `curl` is harder to diagnose than
 one that fails everywhere, and `curl` is the first tool anyone reaches for —
-every off-host reachability check in this file goes through `curl`. A
-development domain whose behaviour
+every off-host reachability check this file gates on goes through `curl`. The
+`wget` line in the measurement above is diagnostic evidence, not a gate, so it
+does not contradict that. A development domain whose behaviour
 depends on which HTTP client the reader picked is not one to hand to a person
 enrolling for the first time.
 
@@ -422,8 +423,8 @@ margin before opening the window.
 Same extensions as the original, one word different — `yadgar.internal` in the
 constraint.
 
-**`openssl` is not installed on this host**, and steps 1 and 4 both need it. Get
-a shell that has it first, and keep that shell for both:
+**`openssl` is not installed on this host**, and steps 1, 4 and 6 all need it. Get
+a shell that has it first, and keep that shell for all three:
 
 ```bash
 nix shell nixpkgs#openssl
@@ -512,15 +513,25 @@ Every `kubectl` below names `--context kind-yadgar` on purpose. This host's
 default context is a production cluster, and `delete secret` is not a command to
 aim at it by accident.
 
-**First, check the renewal margin**, per the precondition above. This prints when
-cert-manager next reissues the leaf on its own. The window from here to step 5
-has to close before that moment:
+**First, check the renewal margin**, per the precondition above. The window from
+here to step 5 has to close before cert-manager reissues the leaf on its own, so
+this has to be a real gate rather than a value for a human to eyeball — a check
+that prints and exits 0 regardless of the date is worse than no check:
 
 ```bash
-kubectl --context kind-yadgar -n yadgar get certificate gateway-tls \
-  -o jsonpath='{.status.renewalTime}{"\n"}'
-# 2026-10-29T16:40:31Z when this was written — 58 days of margin.
-# Days, not hours, or stop and reissue the leaf deliberately first.
+RENEWAL=$(kubectl --context kind-yadgar -n yadgar get certificate gateway-tls \
+  -o jsonpath='{.status.renewalTime}')
+[ -n "$RENEWAL" ] || { echo "no renewalTime — certificate not issued yet" >&2; false; }
+MARGIN_DAYS=$(( ($(date -d "$RENEWAL" +%s) - $(date +%s)) / 86400 ))
+echo "renewalTime: $RENEWAL — ${MARGIN_DAYS} days of margin"
+[ "$MARGIN_DAYS" -ge 1 ] || {
+  echo "STOP: renewal margin too small — reissue the leaf deliberately first, then retry" >&2
+  false
+}
+# 2026-10-29T16:40:31Z when this was written — 58 days of margin, gate passes.
+# Days, not hours, or the gate above stops you here. `false`, not `exit`, so a
+# failure lands you back at the shell prompt rather than out of the `nix shell
+# nixpkgs#openssl` from step 1 — this step still needs it.
 ```
 
 ```bash
@@ -659,13 +670,18 @@ afternoon as a change you are unsure of.
 ```bash
 # nix repo
 git rm modules/nixos/certs/yadgar-dev-ca.crt
-#   ... and delete its line from security.pki.certificateFiles,
+git mv modules/nixos/certs/yadgar-dev-ca-internal.crt modules/nixos/certs/yadgar-dev-ca.crt
+#   ... and point security.pki.certificateFiles at the renamed path alone,
 #   ... and delete "gateway.yadgar.localhost" from networking.hosts
 sudo nixos-rebuild switch
 
 # 1Password
 op item edit yadgar-dev-ca-internal --title yadgar-dev-ca   # after deleting the old item
 ```
+
+The `git mv` matches the 1Password rename in the same block below — after step 7,
+both the secret item and the committed certificate are named `yadgar-dev-ca`
+again, with no `-internal` suffix surviving anywhere.
 
 ### Rolling back — put the old root back FIRST, then revert
 
