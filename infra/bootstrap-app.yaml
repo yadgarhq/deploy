@@ -1,0 +1,38 @@
+# The credential bootstrap: the machine-only secrets a first sync must not ask a
+# human for (ADR-0517).
+#
+# BEFORE ITS CONSUMERS, and the wave is the whole ordering mechanism. `valkey`
+# and `nats` are at -10 and both mount a Secret this creates; `iam` mounts a
+# third. A pod whose Secret is absent sits in ContainerCreating forever rather
+# than failing, so "later" here is not a slow start, it is a stuck estate.
+# -12 is the same wave the MariaDB CRDs use, and for the same reason: a thing
+# that must exist before the things that reference it.
+#
+# WHAT IT DOES NOT DO. It never reads, never updates and never deletes a Secret
+# — the Role below it grants `create` alone. Re-syncing an estate that already
+# holds these credentials is a no-op enforced by RBAC rather than by the script
+# being careful, which matters under Argo's `selfHeal`: a step that regenerated
+# on resync would rotate a live credential and break every consumer still
+# holding the old one.
+#
+# NOT THE CERTIFICATES. Those are cert-manager's, in infra/internal-tls — see
+# that directory for why the split is by mechanism rather than by accident.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bootstrap
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-12"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/bootstrap
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

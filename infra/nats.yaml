@@ -57,10 +57,16 @@ spec:
         # Verified by rendering the chart before committing: the output is
         # `"password": $NATS_PASSWORD`, with no quotes around it.
         #
-        # THE SECRET IS NOT IN GIT. It is minted by hand once and kept in
-        # 1Password, the same shape as `iam-keys` and as the Valkey password —
-        # the commands are in MIGRATION_NOTES.md. A missing Secret leaves this
-        # StatefulSet's pod in ContainerCreating, which is the loud failure.
+        # THE SECRET IS NOT IN GIT, and it is not minted by a human either.
+        # `infra/bootstrap/` generates it on first sync at wave -12, two waves
+        # before this chart, and never touches it again — the same shape as the
+        # Valkey password, both now created by the deployment rather than asked
+        # for (ADR-0517). NOT the same shape as `iam-keys`, which is still
+        # minted by hand on purpose: losing this password costs a rotation,
+        # losing those keys costs the data. A missing Secret would still leave
+        # this StatefulSet's pod in ContainerCreating, but the failure surfaces
+        # earlier: the bootstrap Job fails at wave -12 and stops every later
+        # wave.
         #
         # THE MONITORING PORT IS UNAFFECTED, and that was checked rather than
         # assumed. `config.monitor` serves plain HTTP on 8222 with no client

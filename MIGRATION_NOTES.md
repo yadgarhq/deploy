@@ -4,14 +4,48 @@ Commands for a human to run. Nothing here is applied automatically: each step
 either handles a private key or mutates cluster state, and both are decisions
 rather than side effects.
 
+## A first sync needs exactly one step from this document
+
+**Mint `iam-keys` — "The identity encryption keys" below — before the first
+sync.** Everything else a first sync needs now generates itself (ADR-0517): the
+cache password and the broker account come from `infra/bootstrap/`, and every
+internal certificate from `infra/internal-tls/`. Without `iam-keys` a fresh
+cluster reaches every pod Ready **except `iam`**, which stays in
+`ContainerCreating` naming the file it cannot find.
+
+**That one step is a decision, not a gap.** Those keys are data-bearing rather
+than machine-only: the deployment could mint them, and if it did, a cluster
+whose Secret was lost but whose database survived would get an `iam` that starts
+and cannot decrypt the rows it already has. A pod that refuses to boot and says
+why is strictly better than a service that is broken while reporting healthy, so
+the refusal is kept on purpose. See the comment at the bottom of
+`infra/bootstrap/secrets.yaml`.
+
+**Two more things a human still owns, neither of them blocking.** The EDGE root
+CA is minted by hand and kept in 1Password — a decision under ADR-0490, because
+clients outside the cluster trust it and their trust store outlives `kind delete
+cluster`, while the internal root has no such relying party. Until it is loaded
+the `tls` Application is Degraded and `gateway.yadgar.internal` does not serve;
+nothing else waits on it. And a cluster rebuild is still a rebuild — see the
+next-but-one section.
+
 ---
 
 ## Authenticating the shared cache and the shared broker (ledger 518)
 
-**DO BOTH SECRETS BEFORE MERGING ANYTHING.** They are a precondition, not a
-follow-up. `valkey` and `nats` mount them, so a merge without them leaves both
-pods in `ContainerCreating` — and the cache is on the hot path of every
-user-attributed call.
+**NOTHING TO RUN.** This section opened with four steps that minted
+`valkey-password` and `nats-auth` by hand and loaded them into the cluster.
+They are deleted rather than moved: `infra/bootstrap/` creates both on first
+sync (ADR-0517, ledger 528). An estate that already holds them keeps exactly
+what it has — the bootstrap Job's Role grants `create` alone, so a Secret that
+exists answers 409 and is never rewritten.
+
+The ordering that used to matter here — Secrets, then `deploy`, then `gateway`
+and `iam` — was a property of the images running during that rollout. It is
+spent, and it is gone with the steps it belonged to.
+
+What remains is the part a human still owns: proving the cache refuses a
+stranger, and rotating a password later.
 
 ### Why this exists
 
@@ -28,97 +62,24 @@ never evaluated. One ships anyway as a second layer for real clusters — see
 `infra/network-policies/` — but the thing that actually closes the gap is a
 password on each server, because a server enforces it on every CNI.
 
-### 1. Mint both passwords
+### How the passwords are made now
+
+`infra/bootstrap/secrets.yaml`, at sync wave -12, before `valkey` and `nats` at
+-10. Each password is 33 random bytes as base64, written through the API with
+`stringData` so **no trailing newline** is stored — the property the deleted
+steps carried a warning about, now a property of the mechanism instead. 33 bytes
+rather than 32 so the base64 carries no `=` padding.
+
+Neither password reaches 1Password, and that is the intended trade (ADR-0517):
+nobody reads them, and losing one costs a rotation rather than data.
 
 ```bash
-cd "$(mktemp -d)"
-umask 077
-openssl rand -base64 33 | tr -d '\n' > valkey.pass
-openssl rand -base64 33 | tr -d '\n' > nats.pass
+kubectl -n yadgar logs job/bootstrap-secrets
+# valkey-password: created            <- first sync
+# valkey-password: already exists, left untouched   <- every sync after it
 ```
 
-`base64` rather than `hex` for the same entropy in fewer characters, and
-`tr -d '\n'` because **a trailing newline is part of the password**. `kubectl
-create secret --from-file` stores the file's bytes exactly, and a `\n` on the end
-of the server's copy but not the client's — or the reverse — is a `WRONGPASS`
-with no visible cause. Both consumers trim a trailing newline defensively; the
-servers do not, so the file is written without one.
-
-33 bytes rather than 32 so the base64 has no `=` padding. Nothing depends on
-that; it just avoids a character that invites somebody to trim it.
-
-### 2. Store them in 1Password
-
-```bash
-op item create --category=password --title "yadgar valkey — requirepass" \
-  --vault Private "password=$(cat valkey.pass)"
-op item create --category=password --title "yadgar nats — iam account" \
-  --vault Private "password=$(cat nats.pass)" "username=iam"
-```
-
-Same rule as the identity keys below: 1Password first, cluster second, so a
-cluster rebuild does not destroy them. Losing these is recoverable — rotate both
-and roll four Deployments — which is why they are not treated with the identity
-keys' ceremony.
-
-### 3. Load them into the cluster
-
-**One Secret per hop, read by both ends of it.** `valkey` takes `valkey-password`
-into its environment and `gateway` mounts the same object as a file; `nats` and
-`iam` share `nats-auth` the same way. Two objects rather than four, because
-`requirepass` is a single value with no two-password window — a server copy and a
-client copy could not be rotated one at a time even if they were separate, so
-separating them would buy nothing and add a way for the two to disagree.
-
-```bash
-kubectl create secret generic valkey-password \
-  --namespace yadgar --from-file=password=valkey.pass
-
-kubectl create secret generic nats-auth \
-  --namespace yadgar --from-file=password=nats.pass
-```
-
-Then destroy the local copies:
-
-```bash
-shred -u valkey.pass nats.pass
-cd - && rmdir "$OLDPWD" 2>/dev/null || true
-```
-
-### 4. Check they took
-
-```bash
-kubectl -n yadgar get secret valkey-password nats-auth
-```
-
-### 5. Merge in this order — `deploy` FIRST
-
-**`deploy` before `gateway` and `iam`, and the reason is a property of the images
-that are running right now.**
-
-- **`deploy` first.** The cache gains a password while the running gateway has
-  none. That gateway classifies the resulting `NOAUTH` as an ordinary error and
-  **fails OPEN onto its local floor** — every call still served, at
-  `rate / maxReplicas` per replica, counted in
-  `yadgar_gateway_rate_limit_degraded_total`. A degradation, bounded and loud.
-  The running `iam` simply fails to reach the broker and logs it; nothing
-  consumes D72's invalidation events yet (ledger 457/467), so the functional cost
-  is zero.
-- **The other order is an outage.** A new gateway presenting a password to a
-  cache that has none is refused by the cache — `valkey-server` answers `AUTH`
-  with an error when no password is set — and the NEW code treats a rejected
-  credential as a deployment error rather than an outage, so it returns `503` on
-  every user-attributed call until `deploy` catches up.
-
-So: Secrets, then `deploy`, then `gateway` and `iam` (either order, they are
-independent). Watch the window close:
-
-```bash
-kubectl -n yadgar logs deploy/gateway | grep 'rate limiting enabled'   # authenticated=true
-kubectl -n yadgar logs deploy/iam     | grep 'publishing cache'        # authenticated=true
-```
-
-### 6. Prove the cache actually refuses a stranger
+### Prove the cache actually refuses a stranger
 
 The check that matters, and the only one that cannot pass against the old
 configuration:
@@ -137,12 +98,17 @@ Read the output, do not script the exit status.
 
 ### To rotate a password later
 
-One Secret per hop, so a rotation is one `kubectl create secret --dry-run=client
--o yaml | kubectl apply -f -` and then rolling **both** Deployments. There is no
-staged window: `requirepass` holds one value, so the cache and the gateway are
-briefly out of step however it is done. Roll the cache first — the gateway then
-sees `NOAUTH`, refuses with `503` until it restarts, and a mounted Secret does not
-reach a running process anyway.
+**Still a human step, deliberately.** The bootstrap can create a Secret and
+cannot update one, which is what makes a resync safe; the same limit means it
+cannot rotate one either. A rotation is one `kubectl create secret
+--dry-run=client -o yaml | kubectl apply -f -` and then rolling **both**
+Deployments. The next sync sees the Secret present, answers 409, and leaves the
+new password alone.
+
+There is no staged window: `requirepass` holds one value, so the cache and the
+gateway are briefly out of step however it is done. Roll the cache first — the
+gateway then sees `NOAUTH`, refuses with `503` until it restarts, and a mounted
+Secret does not reach a running process anyway.
 
 ---
 
@@ -171,15 +137,24 @@ sudo systemctl restart kind-yadgar-cluster
 kubectl get nodes                  # 3 nodes Ready, on the new mapping
 ```
 
-Everything in the cluster is GitOps, so Argo rebuilds it — but two things do not
-come back on their own:
+Everything in the cluster is GitOps, so Argo rebuilds it — and since ADR-0517
+that now includes the cache password, the broker account and every internal
+certificate. Three things still do not come back on their own:
 
 - **the Argo CD install itself**: `make bootstrap` (needs `GITHUB_TOKEN`)
-- **the CA secret**: step 3 of "The development TLS edge" below, from 1Password
+- **the EDGE CA secret**: step 3 of "The development TLS edge" below, from
+  1Password
+- **`iam-keys`**: "To restore them into a rebuilt cluster" below, from
+  1Password, and **before** the first sync. `iam` will not start without it,
+  and it is not generated on purpose — a fresh pair against a database that
+  survived the rebuild would decrypt none of it.
 
-That second one is the external-CA decision paying for itself. A root minted
-inside the cluster by a SelfSigned issuer would have been regenerated here, and
-the certificate would have quietly stopped chaining to the root this host trusts.
+The second one is the external-CA decision paying for itself, and it is the
+reason the INTERNAL root is the opposite decision. A root minted inside the
+cluster by a SelfSigned issuer is regenerated here — fatal for the edge, whose
+certificate would quietly stop chaining to the root this host trusts, and
+harmless for `infra/internal-tls/`, whose only relying parties are pods that
+read the new bundle out of Secrets regenerated at the same moment.
 
 ---
 
@@ -191,11 +166,24 @@ HMAC-SHA256 blind index. It refuses to boot without both keys.
 **Losing the encryption key is unrecoverable.** Every stored name becomes
 permanently unreadable — not degraded, gone. Losing the blind-index key is nearly
 as bad: no login can find its user again, because the index it computes no longer
-matches the ones in the table. So the keys live in 1Password first and in the
-cluster second, exactly like the CA below, and for the same reason: a cluster
-rebuild must not destroy them.
+matches the ones in the table.
 
-Run **once**.
+**THIS ONE IS STILL MINTED BY HAND, AND THAT IS THE DECISION.** `valkey-password`
+and `nats-auth` are generated by `infra/bootstrap/` under ADR-0517; these keys
+deliberately are not. ADR-0517 splits credentials into machine-only, where losing
+one costs a rotation, and human-facing, which must be retrievable once. **These
+are a third kind — data-bearing — and for that kind the rule inverts.**
+
+Generate them automatically and a cluster whose Secret was lost but whose
+database survived gets an `iam` that starts and cannot decrypt the rows it
+already has: broken while reporting healthy. Leave them out of the bootstrap and
+the same cluster gets a pod that refuses to start and names the missing file.
+**The refusal is the feature.** It is also the only signal that the keys were
+lost at all.
+
+So a fresh cluster costs this one step, and it is the only one a first sync
+needs. Run **once** per set of keys, and keep the same keys across cluster
+rebuilds.
 
 ### 1. Mint both keys
 
@@ -222,7 +210,11 @@ op document create encryption.key  --title "yadgar iam — encryption key"  --va
 op document create blind-index.key --title "yadgar iam — blind index key" --vault Private
 ```
 
+1Password first, cluster second, so a cluster rebuild does not destroy them.
+
 ### 3. Load them into the cluster
+
+Before the first sync, so `iam` never waits:
 
 ```bash
 kubectl create secret generic iam-keys \
@@ -238,7 +230,39 @@ shred -u encryption.key blind-index.key
 cd - && rmdir "$OLDPWD" 2>/dev/null || true
 ```
 
-### 4. Check it took
+### To restore them into a rebuilt cluster
+
+The same load, from 1Password rather than from `openssl`. Do it **before** the
+first sync of the rebuilt cluster:
+
+```bash
+op document get "yadgar iam — encryption key"  --out-file encryption.key
+op document get "yadgar iam — blind index key" --out-file blind-index.key
+
+kubectl create secret generic iam-keys \
+  --namespace yadgar \
+  --from-file=encryption.key \
+  --from-file=blind-index.key
+
+shred -u encryption.key blind-index.key
+```
+
+### If a cluster already holds keys that were never backed up
+
+Copy them out before anything else destroys them:
+
+```bash
+cd "$(mktemp -d)"
+umask 077
+kubectl -n yadgar get secret iam-keys \
+  -o jsonpath='{.data.encryption\.key}' | base64 -d > encryption.key
+kubectl -n yadgar get secret iam-keys \
+  -o jsonpath='{.data.blind-index\.key}' | base64 -d > blind-index.key
+```
+
+Then step 2 above, and `shred -u` both files.
+
+### Check it took
 
 ```bash
 kubectl -n yadgar get secret iam-keys -o jsonpath='{.data}' | grep -o 'encryption.key'
@@ -248,6 +272,50 @@ kubectl -n yadgar logs deploy/iam | grep 'crypto keys loaded'
 A pod that cannot read them does not start and says why — that is D69's rule
 applied to key material, and it is deliberate: a service that cannot decrypt what
 it stored is broken rather than degraded.
+
+---
+
+## The internal service certificates (ledger 522)
+
+**NOTHING TO RUN, EVER.** `infra/internal-tls/` mints a root on first sync with
+a self-signed cert-manager Issuer, then issues one serving certificate per
+service from it — `iam-tls`, `iam-db-tls`, `task-tls`, `task-db-tls`, in the
+`yadgar` namespace, with the names the charts already default to. cert-manager
+renews them without being asked, which is why they are its job rather than the
+bootstrap Job's.
+
+**This is not the edge, and the two are deliberately different.** The edge root
+is minted by hand and lives in 1Password because clients OUTSIDE the cluster
+trust it and their trust store outlives the cluster (ADR-0490). The internal
+root's only relying parties are pods, each reading the bundle out of a Secret
+that is regenerated with the cluster, so there is nothing to go stale and no
+reason for a human to hold it.
+
+**Nothing is encrypted yet.** Every chart's `tls.enabled` is still `false`. This
+is the material the cut-over needs, not the cut-over.
+
+```bash
+kubectl -n yadgar get certificate
+# each READY=True
+
+kubectl -n yadgar get secret iam-tls -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -text | grep -A1 'Subject Alternative Name'
+# DNS:iam, DNS:iam.yadgar, DNS:iam.yadgar.svc, DNS:iam.yadgar.svc.cluster.local
+```
+
+**The SAN is the Service name and there is no IP SAN.** A client verifies
+against the host it asked for rather than the address it reached, which is what
+lets one certificate cover every pod behind a headless Service. Do not add an IP
+SAN to make a by-IP probe work; make the probe use the name.
+
+### The renewal residual, for whoever performs the cut-over
+
+Certificates are read once at boot, so a renewed Secret does not reach a running
+process. With `duration: 2160h` and `renewBefore: 720h` a pod must restart within
+90 days of its certificate being issued or it serves an expired one. It blocks
+nothing while `tls.enabled` is `false`, and it is the cut-over's to solve —
+either a rollout triggered by the Secret's revision, or an accepted maximum pod
+age.
 
 ---
 

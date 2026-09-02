@@ -115,12 +115,17 @@ spec:
             # and on every platform, which is also what D80 asks for. That is why
             # it leads and the NetworkPolicy follows rather than the reverse.
             #
-            # THE SECRET IS NOT IN GIT and is not created by this repository.
-            # There is no operator here to mint it the way MariaDB's
-            # `generate: true` does for the database passwords, so it is made by
-            # hand once and kept in 1Password — the same shape as `iam-keys`. The
-            # commands are in MIGRATION_NOTES.md. A missing Secret leaves this pod
-            # in ContainerCreating, which is the loud failure and the right one.
+            # THE SECRET IS NOT IN GIT, and it is not minted by a human either.
+            # `infra/bootstrap/` generates it on first sync at wave -12, two
+            # waves before this Deployment, and never touches it again — the
+            # same effect MariaDB's `generate: true` has for the database
+            # passwords, which there is no operator here to provide (ADR-0517).
+            # Nobody reads this password; losing it costs a rotation.
+            #
+            # A missing Secret would still leave this pod in ContainerCreating,
+            # but that is no longer where the failure surfaces: the bootstrap
+            # Job fails at wave -12 and stops every later wave, which is the
+            # loud failure and the right one.
             - name: VALKEY_PASSWORD
               valueFrom:
                 secretKeyRef:
