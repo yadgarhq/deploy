@@ -1,0 +1,194 @@
+# A loud, depth-1 failure for the one manual step this Application needs.
+#
+# ADR-0518: the CA private key behind `yadgar-dev-ca` is data-bearing and is
+# never auto-generated (see clusterissuer.yaml for the full argument and
+# MIGRATION_NOTES.md, "The development TLS edge", step 3, for the manual
+# command). That is not changing here. What changes is how far a person has to
+# dig to learn it.
+#
+# Without this Job, an absent Secret surfaces three hops away and gets more
+# misleading at every hop: `Application/tls` goes Degraded with no message,
+# `Certificate/gateway-tls` reports `DoesNotExist: Issuing certificate as
+# Secret does not exist` — about ITS OWN output secret, not the CA's — and only
+# `ClusterIssuer/yadgar-dev-ca` names the real cause. `iam-keys` (the other
+# manual, data-bearing secret in this estate) fails at depth one instead: a pod
+# event names the missing Secret directly. This Job buys `yadgar-dev-ca` that
+# same depth.
+#
+# WAVES -2 AND -1, one full wave ahead of everything else in this Application
+# (ClusterIssuer, Certificate, Gateway, EnvoyProxy, GatewayClass all sit at the
+# unannotated default of 0). Argo gates each wave on the previous one going
+# Healthy, so a failed Job here stops the rest of the Application from being
+# applied at all — the loud failure arrives before the confusing one, not
+# alongside it. This blocks nothing that was not already blocked: without the
+# CA, the ClusterIssuer is NotReady, the Certificate is unissued, the Gateway's
+# `https` listener is ResolvedRefs=False, and Envoy Gateway never creates a
+# data-plane Deployment or Service in the first place.
+#
+# READ-ONLY BY DESIGN. The Role below grants `get` on exactly one Secret name
+# in `cert-manager` and nothing else — this Job cannot read any other secret,
+# cannot create or rotate this one, and has no opinion on its contents.
+#
+# EXISTENCE IS ALL IT CHECKS, and the success line says no more than that on
+# purpose. A 200 does not prove the object is `type: kubernetes.io/tls`, does
+# not prove it carries `tls.crt` and `tls.key`, and above all does not prove the
+# root inside it can sign `gateway.yadgar.internal`. A Secret holding the WRONG
+# root — which MIGRATION_NOTES.md's own rollback procedure writes — makes the
+# ClusterIssuer go Ready and the Certificate issue cleanly, and then fails at
+# the client against the root's `nameConstraints` permitted subtree. That is the
+# silent failure clusterissuer.yaml exists to prevent, and this Job does not
+# catch it. A success line claiming the issuer "can proceed" would be asserting
+# exactly the thing not checked.
+#
+# SAME NAMESPACE AS THE SECRET IT CHECKS, deliberately, unlike the rest of this
+# Application (which lives in `yadgar`, its Gateway's namespace). A Role's
+# rules apply only within the namespace it is created in, so putting the
+# ServiceAccount, Role, RoleBinding and Job together in `cert-manager` avoids a
+# cross-namespace subject reference for no benefit — the Job has nothing to do
+# in `yadgar`. `cert-manager` already exists by this point: its Application is
+# at wave -10 and this one at -5, and the -2/-1 annotations below order
+# resources WITHIN this Application, which is a separate scale from the wave a
+# parent Application carries.
+#
+# `Replace=true,Force=true`, the same reason `bootstrap-secrets` (D80 Job)
+# carries it: a Job's `spec.template` and `selector` are immutable, so editing
+# the script below would otherwise fail an ordinary apply. Re-running this Job
+# on every sync is safe by construction — it performs one read and mutates
+# nothing, so a resync loop here is, at worst, cosmetic.
+#
+# THE LOG IS NOT DURABLE, and a reader should know it. `Replace=true` under
+# selfHeal deletes and recreates this Job, and its pod and log with it, on the
+# next reconcile. The message below survives until then. It is a signpost read
+# at the moment of failure, not a record — the durable statement of this
+# requirement is MIGRATION_NOTES.md.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: yadgar-tls-preflight
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yadgar-tls-preflight
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["yadgar-dev-ca"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yadgar-tls-preflight
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yadgar-tls-preflight
+subjects:
+  - kind: ServiceAccount
+    name: yadgar-tls-preflight
+    namespace: cert-manager
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: yadgar-tls-preflight
+  namespace: cert-manager
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  backoffLimit: 4
+  # BOUNDED ON BOTH AXES, because the failure this guards against is a Job that
+  # never finishes. curl defaults to a 300s CONNECT timeout and no transfer
+  # timeout at all, so a connection that establishes and then stalls hangs for
+  # ever: the pod never exits, the Job never reaches Failed, and the sync sits
+  # at wave -1 indefinitely with no message — on a cluster where the Secret is
+  # present and healthy. `--max-time` bounds each attempt and this bounds the
+  # Job, so the worst case is a loud DeadlineExceeded rather than a silent wait.
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: yadgar-tls-preflight }
+    spec:
+      serviceAccountName: yadgar-tls-preflight
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 100
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: preflight
+          # Same pinned image as bootstrap-secrets: already present in the
+          # cluster by the time this Job schedules, and a single GET needs
+          # nothing kubectl would add beyond a larger image.
+          image: curlimages/curl:8.16.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+
+              api="https://kubernetes.default.svc"
+              sa="/var/run/secrets/kubernetes.io/serviceaccount"
+              token="$(cat "$sa/token")"
+
+              code="$(curl --silent --show-error --max-time 30 \
+                --cacert "$sa/ca.crt" \
+                --header "Authorization: Bearer $token" \
+                --output /dev/null --write-out '%{http_code}' \
+                "$api/api/v1/namespaces/cert-manager/secrets/yadgar-dev-ca")"
+
+              case "$code" in
+                200)
+                  echo "yadgar-dev-ca: present in cert-manager"
+                  ;;
+                404)
+                  # printf, not a heredoc: a heredoc terminator has to sit at
+                  # column zero, which a YAML block scalar this deeply nested
+                  # cannot give it without breaking the script's own indentation.
+                  printf '%s\n' \
+                    'Secret "yadgar-dev-ca" is missing from namespace "cert-manager".' \
+                    '' \
+                    'The TLS edge cannot come up without it. This key is data-bearing' \
+                    'and is never auto-generated (ADR-0518) - create it by hand from' \
+                    'the root CA kept in 1Password, per MIGRATION_NOTES.md step 3 of' \
+                    '"The development TLS edge":' \
+                    '' \
+                    '  kubectl create secret tls yadgar-dev-ca \' \
+                    '    --namespace cert-manager \' \
+                    '    --cert <(op read "op://Private/yadgar-dev-ca/certificate") \' \
+                    '    --key  <(op read "op://Private/yadgar-dev-ca/private key")' \
+                    '' \
+                    'Confirm the item is the root this cluster expects before' \
+                    'you load it: its nameConstraints must permit the DNS name' \
+                    'the gateway serves. This check does not verify that.' \
+                    '' \
+                    'Then wait for selfHeal. Do not resync by hand while this' \
+                    'Job is still backing off - the sync operation is in flight' \
+                    'and Argo refuses a second one.' >&2
+                  exit 1
+                  ;;
+                *)
+                  echo "yadgar-dev-ca: refused with HTTP $code" >&2
+                  exit 1
+                  ;;
+              esac
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 32Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

@@ -742,6 +742,12 @@ echo "renewalTime: $RENEWAL — ${MARGIN_DAYS} days of margin"
 # nixpkgs#openssl` from step 1 — this step still needs it.
 ```
 
+> The `tls-preflight` Job in `infra/tls/ca-preflight.yaml` fails while this Secret
+> is absent, and it sits one sync wave ahead of the rest of the Application. So
+> the window between the delete and the create halts that wave. Run the two
+> commands together, and expect `Application/tls` to report the preflight's
+> failure until the new Secret is in place.
+
 ```bash
 kubectl --context kind-yadgar -n cert-manager delete secret yadgar-dev-ca
 
@@ -909,6 +915,12 @@ So a rollback restores the CA secret before it reverts anything. Until step 7
 runs, the old item is still titled `yadgar-dev-ca` in 1Password, which is what
 these references resolve — the same references step 3 of "The development TLS
 edge" used to load it in the first place:
+
+> The `tls-preflight` Job in `infra/tls/ca-preflight.yaml` fails while this Secret
+> is absent, and it sits one sync wave ahead of the rest of the Application. So
+> the window between the delete and the create halts that wave. Run the two
+> commands together, and expect `Application/tls` to report the preflight's
+> failure until the new Secret is in place.
 
 ```bash
 kubectl --context kind-yadgar -n cert-manager delete secret yadgar-dev-ca
