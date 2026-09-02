@@ -1,0 +1,169 @@
+# One serving certificate per service, issued by the internal root beside this
+# file. Nothing here turns TLS ON — every chart's `tls.enabled` stays `false`
+# and the cut-over is a separate, revertible lever. This is the material that
+# has to exist before that lever can be pulled at all.
+#
+# ── THE SAN IS THE SERVICE NAME, AND NOT AN IP ──────────────────────────────
+# A client verifies the certificate against THE HOST IT ASKED FOR, not the
+# address it reached: `dial` sets `ClientTlsConfig::domain_name` from the
+# configured host, which is the in-cluster Service name — `iam`, `iam-db`,
+# `task`, `task-db`. That is what makes ONE certificate work across every pod
+# behind a headless Service, which three of these four are.
+#
+# So there are NO IP SANs here and nothing may start relying on one. This
+# estate has already paid for that lesson once: the development root CA excludes
+# every IP, and a by-IP request correctly returns `000`.
+#
+# The longer forms are listed beside the short one because a caller in another
+# namespace would have to use them, and a certificate that names only `iam` is
+# a silent trap for the first such caller. All four names are the same host.
+#
+# ── EACH SECRET IS READ BY BOTH ENDS OF THE HOP ─────────────────────────────
+# cert-manager writes three keys into the Secret of a certificate issued by a CA
+# issuer: `tls.crt`, `tls.key` and `ca.crt`. Verified against the existing
+# `gateway-tls` Secret rather than assumed.
+#
+# That is exactly the shape the charts already expect, and it is why no separate
+# CA Secret exists here. The SERVER mounts its own Secret and reads `tls.crt`
+# plus `tls.key` (`certSecret` / `certSecretKey` / `keySecretKey`). Its CLIENT
+# mounts THE SAME Secret and selects `ca.crt` alone (`caSecret` /
+# `caSecretKey`), which is why `gateway` names `iam-tls` and `iam` names
+# `iam-db-tls`. The client's volume selects one key, so the server's private key
+# is not projected into the client's pod.
+#
+# ── RENEWAL, AND THE RESIDUAL THAT COMES WITH IT ────────────────────────────
+# cert-manager renews at two thirds of the duration and rewrites the Secret in
+# place, with no human involved — the reason certificates are its job rather
+# than the bootstrap Job's. But EVERY SERVICE READS ITS CERTIFICATE ONCE AT
+# BOOT, so a rewritten Secret does not reach a running process. With 90 days and
+# a 30-day renewal window a pod must therefore restart within 90 days of its
+# certificate being issued, or it serves an expired one.
+#
+# That is stated rather than solved here, and it blocks nothing while
+# `tls.enabled` is false. Whoever performs the cut-over owns it: either a
+# rollout triggered by the Secret's revision, or an accepted maximum pod age.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: iam-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: iam-tls
+  commonName: iam
+  dnsNames:
+    - iam
+    - iam.yadgar
+    - iam.yadgar.svc
+    - iam.yadgar.svc.cluster.local
+  duration: 2160h # 90d, the same as the edge certificate
+  renewBefore: 720h # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # A new key on every renewal. A long-lived key behind a short-lived
+    # certificate makes the rotation cosmetic — the opposite choice from the
+    # root, which is re-signed precisely so the bundle stays valid.
+    rotationPolicy: Always
+  usages:
+    # `server auth` is the extended key usage a client checks. `digital
+    # signature` is the plain key usage a TLS 1.3 handshake actually exercises,
+    # named rather than left to cert-manager's defaults so that dropping a
+    # default later cannot quietly break the handshake.
+    - server auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: iam-db-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: iam-db-tls
+  commonName: iam-db
+  # HEADLESS, so this name resolves to every ready pod rather than to one
+  # virtual IP. The certificate still names the SERVICE, because that is the
+  # name the client verifies against however many addresses it dialled.
+  dnsNames:
+    - iam-db
+    - iam-db.yadgar
+    - iam-db.yadgar.svc
+    - iam-db.yadgar.svc.cluster.local
+  duration: 2160h # 90d
+  renewBefore: 720h # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: task-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: task-tls
+  commonName: task
+  dnsNames:
+    - task
+    - task.yadgar
+    - task.yadgar.svc
+    - task.yadgar.svc.cluster.local
+  duration: 2160h # 90d
+  renewBefore: 720h # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: task-db-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: task-db-tls
+  commonName: task-db
+  dnsNames:
+    - task-db
+    - task-db.yadgar
+    - task-db.yadgar.svc
+    - task-db.yadgar.svc.cluster.local
+  duration: 2160h # 90d
+  renewBefore: 720h # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+  usages:
+    - server auth
+    - digital signature

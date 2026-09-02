@@ -1,0 +1,39 @@
+# The INTERNAL certificate authority and the four service certificates it
+# issues. Separate from `infra/tls`, which is the EDGE, and the separation is
+# the point rather than tidiness — see infra/internal-tls/issuer.yaml for the
+# argument.
+#
+# WAVE -8, the same wave the databases use, and for the same reason: it is the
+# first wave after the operators at -10, so cert-manager's CRDs and its
+# admission webhook are already there. A cert-manager custom resource applied
+# before its definition exists is a hard sync failure rather than something Argo
+# retries into place.
+#
+# NOT LATER THAN -5, deliberately. `tls` sits at -5 and is EXPECTED to be
+# Degraded on a fresh cluster, because its issuer waits on a root CA that is
+# minted by hand on purpose (ADR-0490). Argo gates each wave on the previous one
+# going Healthy, so anything placed after -5 would never sync on precisely the
+# cluster this change exists to make work — a clone-and-sync with nothing run by
+# hand.
+#
+# THIS APPLICATION NEEDS NO HUMAN STEP. Everything under it is generated
+# in-cluster on first sync.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: internal-tls
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-8"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/internal-tls
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

@@ -13,6 +13,12 @@
 # `insecure-skip-verify`, which removes exactly the property this exists to test.
 # An external root survives `kind delete cluster`.
 #
+# THAT ARGUMENT IS ABOUT THE EDGE AND ONLY THE EDGE. `infra/internal-tls/` takes
+# the shortcut this paragraph rejects, on purpose: its relying parties are pods
+# that read the bundle out of a Secret regenerated with the cluster, so there is
+# no trust store anywhere to go stale. The boundary is whether the anchor has to
+# reach something the deployment does not own.
+#
 # WHY NOT LET'S ENCRYPT. HTTP-01 requires Let's Encrypt to reach this host on
 # public port 80; the cluster answers on localhost:18443. DNS-01 works without
 # inbound reachability but needs a real public domain plus its DNS credentials in

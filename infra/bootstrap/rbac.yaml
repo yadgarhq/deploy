@@ -1,0 +1,58 @@
+# The identity the bootstrap Job runs as, and the smallest permission that can
+# do the job (ADR-0517 names this as the thing to review).
+#
+# `create` AND NOTHING ELSE. Not `get`, not `list`, not `update`, not `patch`,
+# not `delete`. The consequences are worth stating one at a time, because each
+# is a property this design depends on rather than a nicety:
+#
+#   - It CANNOT read a credential back. A compromised bootstrap pod learns
+#     nothing about the estate's existing secrets, only about the ones it minted
+#     in its own process and then discarded.
+#   - It CANNOT rotate one. The idempotence ADR-0517 calls load-bearing is
+#     therefore enforced by the API server, not by the script remembering to
+#     check first. A `create` against a name that exists returns 409
+#     AlreadyExists, which is the only "already done" signal the Job needs and
+#     the only one it can get.
+#   - It CANNOT delete one, so a pruned or mis-synced Application cannot take
+#     the estate's credentials with it.
+#
+# `resourceNames` IS NOT AVAILABLE ON `create`, and that is a Kubernetes rule
+# rather than an oversight here: the authorizer runs before the request body is
+# decoded, so the name is not yet known. The scope is narrowed by the Role being
+# NAMESPACED instead — this identity can create Secrets in `yadgar` and nowhere
+# else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bootstrap-secrets
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bootstrap-secrets
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bootstrap-secrets
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: bootstrap-secrets
+subjects:
+  - kind: ServiceAccount
+    name: bootstrap-secrets
+    namespace: yadgar
