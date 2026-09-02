@@ -1,0 +1,139 @@
+# Defence in depth for the shared cache and the shared broker (ledger 518).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# READ THIS FIRST: NOTHING IN THIS FILE IS ENFORCED ON THE REFERENCE CLUSTER
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The reference cluster is kind, and kind's CNI is **kindnet**, which does not
+# implement NetworkPolicy at all. Measured, not assumed: `kube-system` runs a
+# `kindnet` DaemonSet and no Calico, Cilium or Weave. The API server accepts
+# these objects, `kubectl get networkpolicy` lists them, `kubectl describe` shows
+# the rules — and **nothing evaluates any of it**. A pod with no label here can
+# open a connection to Valkey on 6379 today and will still be able to after this
+# is applied.
+#
+# So this file is NOT what closed task 518, and it must not be read as though it
+# were. What closed it is `requirepass` on the cache
+# (infra/valkey/valkey.yaml) and the `authorization` block on the broker
+# (infra/nats.yaml), both enforced by the servers themselves and therefore
+# working on every CNI and every platform — which is also what D80 asks for.
+#
+# **A control that cannot fail, presented as protection, is worse than the honest
+# gap.** It is the failure this estate keeps finding, and shipping a
+# NetworkPolicy as the fix here would have been that failure exactly: green
+# because nothing ran it. It is here as a second layer for clusters whose CNI
+# does enforce it, and for the day this one's does.
+#
+# To make it real on this cluster, the CNI has to be replaced — a decision about
+# the reference deployment, not a step in this task.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT AN ENFORCING CNI WOULD ALSO NEED
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Stated because the day somebody swaps the CNI is the day it matters, and
+# because it cannot be tested here:
+#
+# - **kubelet probe traffic.** Valkey's `livenessProbe` is a `tcpSocket` on 6379
+#   dialled by the kubelet from the NODE, and NATS' probes are `httpGet` on 8222.
+#   Calico and Cilium both permit host-namespace traffic to pods by default, so
+#   neither breaks — but a CNI that does not would fail both probes and restart
+#   healthy pods. Check that before switching, and add a rule for the node CIDR
+#   if it is needed. No node CIDR is written here, because a value nobody can
+#   verify on this cluster is a value nobody will notice is wrong.
+# - **Egress is not restricted at all**, only ingress. Egress rules need DNS
+#   carve-outs to be usable, and a half-written egress policy breaks name
+#   resolution for everything it selects. Ingress is the half that answers the
+#   finding.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# SELECTORS
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# **A podSelector that matches nothing is indistinguishable from a working
+# policy on kindnet.** So every label below was read off rendered output rather
+# than recalled: `app.kubernetes.io/name: valkey` from the Deployment in
+# infra/valkey/valkey.yaml, `app.kubernetes.io/name: nats` from `helm template`
+# of the nats chart at the pinned version, and `app: gateway` / `app: iam` from
+# `helm template` of each module's own chart, which labels pods `app:
+# {{ .Chart.Name }}`.
+#
+# On a cluster that DOES enforce this, verify with:
+#
+#   kubectl -n yadgar get pod -l app.kubernetes.io/name=valkey
+#   kubectl -n yadgar get pod -l app=gateway
+#
+# Empty output means the policy selects nothing and protects nothing.
+---
+# THE ONE CONSUMER IS `gateway`, and that is measured rather than recalled: the
+# `redis` crate appears in exactly one Cargo.toml in the organisation, and it is
+# `gateway`'s. So this is a list of one rather than a shortcut.
+#
+# THE HEADER OF infra/valkey/valkey.yaml DESCRIBES MORE THAN THAT. It names D17's
+# row and query caches inside each twin, D29's conversation tokens and D46's
+# throttle counters — what the cache is FOR, not who dials it today. Each of those
+# arriving is a service that has to be added here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-ingress
+  namespace: yadgar
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: valkey }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: gateway }
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# THE ONE CONSUMER IS `iam` — `invalidate.rs`, publishing D72's cache
+# invalidation. `gateway` does not connect to the broker: it holds its credential
+# cache in process per replica and has no subscriber yet (ledger 457/467). When
+# that subscriber is built, `gateway` has to be added to this list, and a
+# revocation event that never arrives is exactly the kind of failure that looks
+# like a caching bug rather than a policy one.
+#
+# THREE PORTS, not one, and the two extra are why this is worth reading. A
+# NetworkPolicy with any ingress rule DENIES every port it does not name, so a
+# policy naming only 4222 would cut the monitoring endpoint the chart's own
+# probes use — restarting a healthy broker on the first CNI that enforces this.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats-ingress
+  namespace: yadgar
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: nats }
+  policyTypes: [Ingress]
+  ingress:
+    # The client port. The whole point of the file.
+    - from:
+        - podSelector:
+            matchLabels: { app: iam }
+      ports:
+        - protocol: TCP
+          port: 4222
+    # The monitoring port, from ANYWHERE in the namespace, and deliberately not
+    # narrowed. It is HTTP with no authorization and no secrets on it, the chart's
+    # startup, readiness and liveness probes all use it, and kubelet probes do not
+    # come from a pod this selector could name at all. Narrowing it to Prometheus
+    # would leave the probes to the CNI's treatment of host traffic, which is the
+    # thing that varies.
+    - ports:
+        - protocol: TCP
+          port: 8222
+    # The cluster port, from the broker's own pods. `config.cluster.enabled` is
+    # false today, so this matches nothing — it is here so that turning clustering
+    # on does not silently produce a broker whose members cannot route to each
+    # other, which presents as JetStream never becoming ready.
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: nats }
+      ports:
+        - protocol: TCP
+          port: 6222

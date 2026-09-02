@@ -72,18 +72,75 @@ spec:
           # chart.
           image: valkey/valkey:9.1.1
           imagePullPolicy: IfNotPresent
+          # ── A SHELL, and it is the only way to get the password in ──────────
+          # Container `args` are NOT shell-expanded, and the official image's
+          # entrypoint execs `valkey-server "$@"` without evaluating anything, so
+          # `--requirepass $VALKEY_PASSWORD` as a bare argument would set the
+          # password to the sixteen literal characters of that string.
+          # Kubernetes' own `$(VAR)` expansion does apply to `command` and
+          # `args` — but it expands into the PodSpec's rendered command, which is
+          # exactly where this change exists to keep the password out of.
+          #
+          # `exec` so valkey-server is PID 1 and receives SIGTERM directly.
+          # Without it the shell is PID 1, the signal never reaches the server,
+          # and every rollout waits out the whole termination grace period.
+          #
+          # THE RESIDUAL, stated rather than left to be found: the password is
+          # visible in `/proc/1/cmdline` inside this container. It is not in this
+          # manifest, not in `kubectl describe pod`, and not in git — which are
+          # the three places it would otherwise reach somebody who is not already
+          # inside the container.
+          command: ["sh", "-c"]
           args:
-            - --maxmemory
-            - 512mb
             # A cache that refuses writes when full is not a cache. Eviction is
             # the correct behaviour for every class of entry stored here, all of
             # which are recomputable.
-            - --maxmemory-policy
-            - allkeys-lru
-            - --save
-            - ""
-            - --appendonly
-            - "no"
+            - |
+              exec valkey-server \
+                --requirepass "$VALKEY_PASSWORD" \
+                --maxmemory 512mb \
+                --maxmemory-policy allkeys-lru \
+                --save "" \
+                --appendonly no
+          env:
+            # ── requirepass (ledger 518) ────────────────────────────────────
+            # Until this landed ANYTHING ON THE POD NETWORK could read and
+            # rewrite everything in here: D74's token buckets (reset one to grant
+            # unlimited capacity, or empty one to throttle a named person), D18's
+            # epoch counters, D29's conversation tokens and D46's throttle
+            # counters. There was no NetworkPolicy either, and on the reference
+            # CNI there could not usefully be one — see infra/network-policies/.
+            #
+            # `requirepass` is enforced by the SERVER, so it holds on every CNI
+            # and on every platform, which is also what D80 asks for. That is why
+            # it leads and the NetworkPolicy follows rather than the reverse.
+            #
+            # THE SECRET IS NOT IN GIT and is not created by this repository.
+            # There is no operator here to mint it the way MariaDB's
+            # `generate: true` does for the database passwords, so it is made by
+            # hand once and kept in 1Password — the same shape as `iam-keys`. The
+            # commands are in MIGRATION_NOTES.md. A missing Secret leaves this pod
+            # in ContainerCreating, which is the loud failure and the right one.
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-password
+                  key: password
+            # THE PROBE'S COPY, under the name `valkey-cli` itself reads. A
+            # probe's `exec.command` is NOT subject to Kubernetes' `$(VAR)`
+            # expansion — that applies to `command` and `args` only — so the
+            # credential reaches the probe either through the environment or on a
+            # command line that runs every five seconds. This is the better of
+            # the two.
+            #
+            # `VALKEYCLI_AUTH`, NOT `REDISCLI_AUTH`. Read off `valkey-cli --help`
+            # in this exact image rather than assumed from Redis: the fork
+            # renamed it, and the Redis name is silently ignored.
+            - name: VALKEYCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-password
+                  key: password
           ports:
             - name: valkey
               containerPort: 6379
@@ -98,7 +155,25 @@ spec:
             tcpSocket: { port: valkey }
             initialDelaySeconds: 5
           readinessProbe:
+            # ── THE ANSWER IS CHECKED, NOT JUST THE EXIT CODE ────────────────
+            # This used to be `["valkey-cli", "ping"]`, and it is grepped now
+            # because of a MEASUREMENT rather than a preference. Against this
+            # image with `requirepass` set and no credential available,
+            # `valkey-cli ping` prints `NOAUTH Authentication required.` and
+            # **exits 0**. So the bare form was a probe that could not fail on
+            # the one thing this change makes possible to get wrong: it would
+            # have reported a server nobody could talk to as Ready, and the
+            # gateway's degraded-mode counter would have been the only evidence.
+            #
+            # With the grep, an unauthenticated probe exits 1 and this pod leaves
+            # the Service. Both arms were run against the real image before this
+            # was written: authenticated exits 0, unauthenticated exits 1.
+            #
+            # The `livenessProbe` above stays `tcpSocket`, deliberately. It asks
+            # whether the port is open, which is a question `requirepass` does not
+            # change — and a liveness probe that can fail on a credential would
+            # restart a healthy server because a Secret was rotated wrong.
             exec:
-              command: ["valkey-cli", "ping"]
+              command: ["sh", "-c", "valkey-cli ping | grep -q PONG"]
             initialDelaySeconds: 2
             periodSeconds: 5

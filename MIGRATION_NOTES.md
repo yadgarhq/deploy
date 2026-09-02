@@ -6,6 +6,146 @@ rather than side effects.
 
 ---
 
+## Authenticating the shared cache and the shared broker (ledger 518)
+
+**DO BOTH SECRETS BEFORE MERGING ANYTHING.** They are a precondition, not a
+follow-up. `valkey` and `nats` mount them, so a merge without them leaves both
+pods in `ContainerCreating` — and the cache is on the hot path of every
+user-attributed call.
+
+### Why this exists
+
+Verified 2026-09-02: Valkey ran with no `--requirepass`, NATS with no
+authentication of any kind, and `grep -rl NetworkPolicy deploy/` matched nothing.
+Anything on the pod network could read and rewrite D74's token buckets and D18's
+epoch counters, and could **inject** events into D25's audit outbox. None of it
+was a decision — the record contains no `requirepass`, `nkey`, `NetworkPolicy` or
+`mTLS`, so it was undeclared rather than accepted.
+
+**A NetworkPolicy would not have fixed it here.** This cluster's CNI is kindnet,
+which does not implement NetworkPolicy: the object is accepted, displayed, and
+never evaluated. One ships anyway as a second layer for real clusters — see
+`infra/network-policies/` — but the thing that actually closes the gap is a
+password on each server, because a server enforces it on every CNI.
+
+### 1. Mint both passwords
+
+```bash
+cd "$(mktemp -d)"
+umask 077
+openssl rand -base64 33 | tr -d '\n' > valkey.pass
+openssl rand -base64 33 | tr -d '\n' > nats.pass
+```
+
+`base64` rather than `hex` for the same entropy in fewer characters, and
+`tr -d '\n'` because **a trailing newline is part of the password**. `kubectl
+create secret --from-file` stores the file's bytes exactly, and a `\n` on the end
+of the server's copy but not the client's — or the reverse — is a `WRONGPASS`
+with no visible cause. Both consumers trim a trailing newline defensively; the
+servers do not, so the file is written without one.
+
+33 bytes rather than 32 so the base64 has no `=` padding. Nothing depends on
+that; it just avoids a character that invites somebody to trim it.
+
+### 2. Store them in 1Password
+
+```bash
+op item create --category=password --title "yadgar valkey — requirepass" \
+  --vault Private "password=$(cat valkey.pass)"
+op item create --category=password --title "yadgar nats — iam account" \
+  --vault Private "password=$(cat nats.pass)" "username=iam"
+```
+
+Same rule as the identity keys below: 1Password first, cluster second, so a
+cluster rebuild does not destroy them. Losing these is recoverable — rotate both
+and roll four Deployments — which is why they are not treated with the identity
+keys' ceremony.
+
+### 3. Load them into the cluster
+
+**One Secret per hop, read by both ends of it.** `valkey` takes `valkey-password`
+into its environment and `gateway` mounts the same object as a file; `nats` and
+`iam` share `nats-auth` the same way. Two objects rather than four, because
+`requirepass` is a single value with no two-password window — a server copy and a
+client copy could not be rotated one at a time even if they were separate, so
+separating them would buy nothing and add a way for the two to disagree.
+
+```bash
+kubectl create secret generic valkey-password \
+  --namespace yadgar --from-file=password=valkey.pass
+
+kubectl create secret generic nats-auth \
+  --namespace yadgar --from-file=password=nats.pass
+```
+
+Then destroy the local copies:
+
+```bash
+shred -u valkey.pass nats.pass
+cd - && rmdir "$OLDPWD" 2>/dev/null || true
+```
+
+### 4. Check they took
+
+```bash
+kubectl -n yadgar get secret valkey-password nats-auth
+```
+
+### 5. Merge in this order — `deploy` FIRST
+
+**`deploy` before `gateway` and `iam`, and the reason is a property of the images
+that are running right now.**
+
+- **`deploy` first.** The cache gains a password while the running gateway has
+  none. That gateway classifies the resulting `NOAUTH` as an ordinary error and
+  **fails OPEN onto its local floor** — every call still served, at
+  `rate / maxReplicas` per replica, counted in
+  `yadgar_gateway_rate_limit_degraded_total`. A degradation, bounded and loud.
+  The running `iam` simply fails to reach the broker and logs it; nothing
+  consumes D72's invalidation events yet (ledger 457/467), so the functional cost
+  is zero.
+- **The other order is an outage.** A new gateway presenting a password to a
+  cache that has none is refused by the cache — `valkey-server` answers `AUTH`
+  with an error when no password is set — and the NEW code treats a rejected
+  credential as a deployment error rather than an outage, so it returns `503` on
+  every user-attributed call until `deploy` catches up.
+
+So: Secrets, then `deploy`, then `gateway` and `iam` (either order, they are
+independent). Watch the window close:
+
+```bash
+kubectl -n yadgar logs deploy/gateway | grep 'rate limiting enabled'   # authenticated=true
+kubectl -n yadgar logs deploy/iam     | grep 'publishing cache'        # authenticated=true
+```
+
+### 6. Prove the cache actually refuses a stranger
+
+The check that matters, and the only one that cannot pass against the old
+configuration:
+
+```bash
+kubectl -n yadgar run valkey-probe --rm -it --restart=Never \
+  --image=valkey/valkey:9.1.1 -- \
+  valkey-cli -h valkey -p 6379 ping
+```
+
+`NOAUTH Authentication required.` is the pass. `PONG` means the cache is still
+open — **and note that this command exits 0 either way**: `valkey-cli` prints the
+refusal and returns success, which is why the readiness probe in
+`infra/valkey/valkey.yaml` greps for `PONG` rather than trusting the exit code.
+Read the output, do not script the exit status.
+
+### To rotate a password later
+
+One Secret per hop, so a rotation is one `kubectl create secret --dry-run=client
+-o yaml | kubectl apply -f -` and then rolling **both** Deployments. There is no
+staged window: `requirepass` holds one value, so the cache and the gateway are
+briefly out of step however it is done. Roll the cache first — the gateway then
+sees `NOAUTH`, refuses with `503` until it restarts, and a mounted Secret does not
+reach a running process anyway.
+
+---
+
 ## Recreate the kind cluster on the new port mapping (ledger 454)
 
 **Do this first** — the TLS edge below cannot be reached until it is done.
