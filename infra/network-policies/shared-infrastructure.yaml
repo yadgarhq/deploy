@@ -90,12 +90,11 @@ spec:
         - protocol: TCP
           port: 6379
 ---
-# THE ONE CONSUMER IS `iam` — `invalidate.rs`, publishing D72's cache
-# invalidation. `gateway` does not connect to the broker: it holds its credential
-# cache in process per replica and has no subscriber yet (ledger 457/467). When
-# that subscriber is built, `gateway` has to be added to this list, and a
-# revocation event that never arrives is exactly the kind of failure that looks
-# like a caching bug rather than a policy one.
+# TWO CONSUMERS NOW (gateway#17): `iam` — `invalidate.rs` — publishes D72's
+# cache invalidation, and `gateway` subscribes to it from its own
+# `invalidate.rs`. Each new consumer of the broker has to be added to this
+# list the same way; a revocation event that never arrives is exactly the kind
+# of failure that looks like a caching bug rather than a policy one.
 #
 # THREE PORTS, not one, and the two extra are why this is worth reading. A
 # NetworkPolicy with any ingress rule DENIES every port it does not name, so a
@@ -115,6 +114,8 @@ spec:
     - from:
         - podSelector:
             matchLabels: { app: iam }
+        - podSelector:
+            matchLabels: { app: gateway }
       ports:
         - protocol: TCP
           port: 4222
