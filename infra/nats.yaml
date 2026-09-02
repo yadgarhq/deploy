@@ -26,6 +26,67 @@ spec:
         # occasion it arises, without a pod running permanently to provide it.
         natsBox:
           enabled: false
+
+        # ── Authentication (ledger 518) ──────────────────────────────────────
+        # Until this landed the broker accepted a connection from ANYTHING ON THE
+        # POD NETWORK, with no NetworkPolicy behind it either. That made D72's
+        # cache invalidation events forgeable — publish a revocation for
+        # somebody, or drown the real ones under a flood — and D25's audit outbox
+        # INJECTABLE, which is worse: D25's own argument is that an audit log with
+        # silent holes is worse than none because it will be trusted, and a
+        # forgeable one is worse still.
+        #
+        # ONE ACCOUNT, because there is exactly one publisher TODAY. Measured
+        # rather than recalled: `async-nats` appears in exactly one Cargo.toml in
+        # the organisation, `iam`'s, which publishes from `invalidate.rs`.
+        #
+        # THE HEADER OF THIS FILE DESCRIBES MORE THAN THAT, and the difference is
+        # the thing to notice. It names the write path (D11, D39) and D25's audit
+        # outbox relay, which are what this broker is FOR — none of them is built
+        # yet. Each one that arrives needs an account added here, and it will
+        # arrive as a service that cannot connect rather than as a service that
+        # connects anonymously, which is the failure mode worth having.
+        #
+        # Add accounts rather than sharing this one: a shared account cannot have
+        # any single service's access revoked.
+        #
+        # `<< >>` IS THE CHART'S ESCAPE, NOT NATS SYNTAX. The chart emits this
+        # config as JSON and quotes every scalar; a value wrapped in `<< >>` is
+        # emitted UNQUOTED, which is what makes `$NATS_PASSWORD` a variable the
+        # server expands rather than a literal fourteen-character password.
+        # Verified by rendering the chart before committing: the output is
+        # `"password": $NATS_PASSWORD`, with no quotes around it.
+        #
+        # THE SECRET IS NOT IN GIT. It is minted by hand once and kept in
+        # 1Password, the same shape as `iam-keys` and as the Valkey password —
+        # the commands are in MIGRATION_NOTES.md. A missing Secret leaves this
+        # StatefulSet's pod in ContainerCreating, which is the loud failure.
+        #
+        # THE MONITORING PORT IS UNAFFECTED, and that was checked rather than
+        # assumed. `config.monitor` serves plain HTTP on 8222 with no client
+        # authorization, so the chart's own startup, readiness and liveness probes
+        # keep working — an authorization block that broke them would take the
+        # broker down rather than secure it.
+        config:
+          merge:
+            authorization:
+              users:
+                - user: iam
+                  password: << $NATS_PASSWORD >>
+
+        container:
+          env:
+            # A FILE would be better and this chart offers no way to ask for one:
+            # `container.env` is where it accepts a `secretKeyRef`, and the config
+            # above references an environment variable by name. So the password is
+            # in this container's environment. It is still out of git, out of this
+            # manifest and out of any repository — and this pod is the one that
+            # legitimately holds the credential, unlike its clients.
+            NATS_PASSWORD:
+              valueFrom:
+                secretKeyRef:
+                  name: nats-auth
+                  key: password
   destination:
     server: https://kubernetes.default.svc
     namespace: yadgar

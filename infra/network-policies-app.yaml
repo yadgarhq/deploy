@@ -1,0 +1,38 @@
+# Network policies for the shared infrastructure (ledger 518).
+#
+# **UNENFORCED ON THE REFERENCE CLUSTER.** kind's CNI is kindnet, which does not
+# implement NetworkPolicy: these objects are accepted, displayed and never
+# evaluated. What actually authenticates the shared cache and the shared broker
+# is `requirepass` in infra/valkey/valkey.yaml and the `authorization` block in
+# infra/nats.yaml. Read infra/network-policies/shared-infrastructure.yaml before
+# treating anything here as protection.
+#
+# ITS OWN Application rather than a file inside infra/valkey/, because the
+# policies span two workloads — one of which, NATS, is a Helm Application with no
+# directory of its own to put a manifest in. One Application for both keeps the
+# policy for a hop and the policy for its twin in one place.
+#
+# A LATER SYNC WAVE than the workloads it selects. A NetworkPolicy applied before
+# the pods it names exist is not an error — the selector simply matches nothing
+# and starts matching when they appear — but ordering it after them means a
+# `kubectl get pod -l` check run straight after a sync answers the question the
+# policy depends on.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: network-policies
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/network-policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
