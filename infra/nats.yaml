@@ -36,19 +36,28 @@ spec:
         # silent holes is worse than none because it will be trusted, and a
         # forgeable one is worse still.
         #
-        # ONE ACCOUNT, because there is exactly one publisher TODAY. Measured
-        # rather than recalled: `async-nats` appears in exactly one Cargo.toml in
-        # the organisation, `iam`'s, which publishes from `invalidate.rs`.
+        # TWO ACCOUNTS now (gateway#17): `iam` publishes D72's invalidation from
+        # `invalidate.rs`, and `gateway` subscribes to it in its own
+        # `invalidate.rs`, plain `subscribe` with no queue group — confirmed
+        # against that file rather than assumed, and it is why `gateway` gets no
+        # publish permission and no `_INBOX.>`: it never does request/reply.
         #
-        # THE HEADER OF THIS FILE DESCRIBES MORE THAN THAT, and the difference is
-        # the thing to notice. It names the write path (D11, D39) and D25's audit
-        # outbox relay, which are what this broker is FOR — none of them is built
-        # yet. Each one that arrives needs an account added here, and it will
-        # arrive as a service that cannot connect rather than as a service that
-        # connects anonymously, which is the failure mode worth having.
+        # `gateway` IS SUBSCRIBE-ONLY, restricted to the two subjects its
+        # consumer actually reads. `publish: {deny: ">"}` closes every subject,
+        # including its own reply inbox, on purpose — a compromised gateway
+        # cannot forge the revocation it is supposed to be receiving.
         #
-        # Add accounts rather than sharing this one: a shared account cannot have
-        # any single service's access revoked.
+        # THE HEADER OF THIS FILE DESCRIBES MORE THAT WILL ARRIVE, and the
+        # difference is the thing to notice. It names the write path (D11, D39)
+        # and D25's audit outbox relay, which are what this broker is FOR — none
+        # of them is built yet. Each one that arrives needs an account added
+        # here, and it will arrive as a service that cannot connect rather than
+        # as a service that connects anonymously, which is the failure mode
+        # worth having.
+        #
+        # Add accounts rather than sharing one: a shared account cannot have any
+        # single service's access revoked, and `gateway`'s permissions could not
+        # be narrower than `iam`'s if the two shared a user.
         #
         # `<< >>` IS THE CHART'S ESCAPE, NOT NATS SYNTAX. The chart emits this
         # config as JSON and quotes every scalar; a value wrapped in `<< >>` is
@@ -57,16 +66,22 @@ spec:
         # Verified by rendering the chart before committing: the output is
         # `"password": $NATS_PASSWORD`, with no quotes around it.
         #
-        # THE SECRET IS NOT IN GIT, and it is not minted by a human either.
-        # `infra/bootstrap/` generates it on first sync at wave -12, two waves
-        # before this chart, and never touches it again — the same shape as the
-        # Valkey password, both now created by the deployment rather than asked
-        # for (ADR-0517). NOT the same shape as `iam-keys`, which is still
-        # minted by hand on purpose: losing this password costs a rotation,
-        # losing those keys costs the data. A missing Secret would still leave
-        # this StatefulSet's pod in ContainerCreating, but the failure surfaces
-        # earlier: the bootstrap Job fails at wave -12 and stops every later
-        # wave.
+        # NEITHER SECRET IS IN GIT, and neither is minted by a human either.
+        # `infra/bootstrap/` generates both `nats-auth` and `nats-auth-gateway`
+        # on first sync at wave -12, two waves before this chart, and never
+        # touches either again — the same shape as the Valkey password, all
+        # three now created by the deployment rather than asked for (ADR-0517).
+        # `nats-auth-gateway` is a SEPARATE Secret rather than a second key
+        # added to `nats-auth`: the bootstrap Job's Role grants `create` only
+        # (`infra/bootstrap/rbac.yaml`), and a key added to an existing
+        # created Secret is a `create` against a name that already exists — the
+        # API server answers 409 and the script reads that as "already done",
+        # so the key would never materialise on a cluster that has already
+        # bootstrapped. NOT the same shape as `iam-keys`, which is still minted
+        # by hand on purpose: losing a broker password costs a rotation, losing
+        # those keys costs the data. A missing Secret would still leave the
+        # relevant pod in ContainerCreating, but the failure surfaces earlier:
+        # the bootstrap Job fails at wave -12 and stops every later wave.
         #
         # THE MONITORING PORT IS UNAFFECTED, and that was checked rather than
         # assumed. `config.monitor` serves plain HTTP on 8222 with no client
@@ -79,6 +94,15 @@ spec:
               users:
                 - user: iam
                   password: << $NATS_PASSWORD >>
+                - user: gateway
+                  password: << $NATS_PASSWORD_GATEWAY >>
+                  permissions:
+                    publish:
+                      deny: ">"
+                    subscribe:
+                      allow:
+                        - "yadgar.iam.credential.revoked"
+                        - "yadgar.iam.user.teams-changed"
 
         container:
           env:
@@ -92,6 +116,11 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: nats-auth
+                  key: password
+            NATS_PASSWORD_GATEWAY:
+              valueFrom:
+                secretKeyRef:
+                  name: nats-auth-gateway
                   key: password
   destination:
     server: https://kubernetes.default.svc
