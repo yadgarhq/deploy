@@ -71,6 +71,38 @@ spec:
     # signature` is the plain key usage a TLS 1.3 handshake actually exercises,
     # named rather than left to cert-manager's defaults so that dropping a
     # default later cannot quietly break the handshake.
+    #
+    # THE ABSENCE OF `client auth` HERE IS NOW A SECURITY CONTROL, not only the
+    # tidiness of naming what is used. Since client certificates were added
+    # beside this file, ONE authority issues both directions, and what stops a
+    # stolen SERVING certificate being replayed as a client credential is
+    # exactly that this list NAMES `server auth` and not `client auth`. Adding
+    # `client auth` here would silently remove the separation, with a Ready
+    # certificate and a green sync.
+    #
+    # BUT THE WALL SEPARATES NAMED PURPOSES ONLY. IT ACCEPTS A LEAF THAT NAMES
+    # NONE. rustls checks this through webpki's `KeyUsage::client_auth()` and
+    # `KeyUsage::server_auth()`, and both are `required_if_present` rather than
+    # `required` — read in rustls-webpki 0.103.15, where `check_eku` hands
+    # `validate` an EMPTY iterator when the extension is absent and `validate`
+    # returns `Ok` for exactly that case. So a leaf carrying NO extended key
+    # usage at all passes BOTH checks. Confirmed by probe in both directions
+    # rather than by reading alone: such a leaf is accepted as a client
+    # credential AND as a serving one.
+    #
+    # SO THE TRAP IS OMITTING `usages`, NOT ONLY WIDENING IT — and omitting it
+    # is the DEFAULT. cert-manager's own CRD text says a Certificate with no
+    # `usages` gets `digital signature and key encipherment`, which is no
+    # extended key usage at all. A leaf added to this file without this block
+    # is therefore valid in BOTH directions, silently.
+    #
+    # A pre-commit hook refuses both shapes — an absent or empty `usages`, and
+    # a `usages` naming `server auth` and `client auth` together — for every
+    # Certificate UNDER `infra/` that names this issuer. That scope is the whole
+    # of it: a Certificate defined anywhere else, in a chart or another
+    # repository, names the same issuer and is gated by nothing. That is the
+    # gate; review is no longer the only thing standing here. See the header of
+    # client-certificates.yaml.
     - server auth
     - digital signature
   issuerRef:

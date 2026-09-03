@@ -1,0 +1,291 @@
+# One CLIENT certificate per calling service, issued by the same internal root
+# that issues the serving leaves beside this file (ADR-0516).
+#
+# Nothing here turns anything on. No chart mounts these yet, no `clientAuth`
+# flag exists yet, and no server asks for a client certificate. This is the
+# material that has to exist before any of that can be built, on the same
+# discipline the server-TLS work used: the certificates land first, the code
+# lands off by default, and the cut-over is one separate, revertible lever.
+#
+# ── WHY A SECOND CERTIFICATE AT ALL ─────────────────────────────────────────
+# The serving leaves proved WHO ANSWERED. Nothing proves who ASKED. `Scope` is
+# a field of the request message and is minted only by the gateway (ADR-0511),
+# so any peer with pod-network access to `iam-db:50051` can supply an arbitrary
+# one and read every tenant's data. ADR-0516 rules that the connection itself
+# must be authenticated, and rules OUT making that a NetworkPolicy's job: a
+# NetworkPolicy is enforced by the CNI, so the same manifest protects an EKS
+# deployment and protects nothing on kind — a control that keeps working while
+# it stops protecting, which is D80's more dangerous failure mode. A client
+# certificate is checked by the server itself, so it holds identically
+# everywhere. (A NetworkPolicy still ships, as a second layer; see
+# infra/network-policies/.)
+#
+# ── ONE AUTHORITY, AND WHAT REPLACES THE SECOND ONE ─────────────────────────
+# THIS IS THE DECISION THE REMAINING CARS BUILD ON, so it is argued here rather
+# than left to be inferred from the absence of a second Issuer.
+#
+# The alternative was a separate client CA, so that a stolen SERVING certificate
+# could not be replayed as a client credential. It is not taken, for two
+# reasons.
+#
+# First, the separation it buys is already there — BUT ONLY FOR AS LONG AS
+# EVERY LEAF NAMES ITS PURPOSE, which is a property of this directory rather
+# than of X.509. The wall section below states the limit and names the hook
+# that now holds it; read that before relying on this paragraph.
+#
+# rustls verifies a CLIENT chain for the `client auth` extended key usage and a
+# SERVER chain for `server auth` — `WebPkiClientVerifier::verify_client_cert`
+# calls `verify_for_usage(..., KeyUsage::client_auth(), ...)`, read in
+# rustls 0.23. So a serving leaf THAT NAMES `server auth` is refused as a
+# client credential by a server that trusts its issuer perfectly well, and a
+# client leaf naming `client auth` is refused as a serving one in the other
+# direction. `yadgarhq/dial` holds that as a test —
+# `a_certificate_that_is_not_valid_for_client_auth_is_refused` — which turns a
+# source read into a property this estate owns. If that test ever starts
+# passing for the wrong reason, this decision is the one to revisit.
+#
+# Second, a second root is a second trust anchor for an operator to distribute
+# by hand. Under D80 that cost is real: an adopter on EKS assembles these
+# Secrets themselves, and doubling the number of authorities they must keep
+# straight doubles the ways a mount can be wrong. The residual is small and
+# named rather than argued away — anyone holding ANY leaf key from a compromised
+# pod already holds that pod's client leaf too, so the split would not have kept
+# them out.
+#
+# THE SCOPE OF THAT GUARANTEE, because it is narrower than "certificates work
+# this way": it holds for servers WE ship, which are all tonic over rustls. It
+# is not a property of X.509. A verifier that ignores extended key usage would
+# accept a serving leaf as a client credential, and this namespace already
+# contains a non-rustls TLS stack — the MariaDB operator's own
+# `*-mariadb-client-cert`, under its own CA, which is unrelated to this root and
+# must stay that way. Do not point a non-rustls verifier at
+# `yadgar-internal-ca` without re-checking this.
+#
+# ── THE `usages` BLOCK BELOW IS THAT WALL, AND A HOOK NOW VALIDATES IT ──────
+# Each certificate here names `client auth` and NOT `server auth`; each serving
+# leaf names `server auth` and NOT `client auth`.
+#
+# THE WALL SEPARATES NAMED PURPOSES. IT DOES NOT SEPARATE A LEAF THAT NAMES
+# NONE — and that shape is the DEFAULT, which is what makes it worth a gate
+# rather than a note. webpki's `KeyUsage::client_auth()` and
+# `KeyUsage::server_auth()` are both `required_if_present` rather than
+# `required`, read in rustls-webpki 0.103.15: `check_eku` hands `validate` an
+# EMPTY iterator when the extension is absent, and `validate` returns `Ok` for
+# that case. A leaf with NO extended key usage therefore passes BOTH, confirmed
+# by probe in both directions. cert-manager emits exactly that leaf when
+# `usages` is omitted — its CRD text gives `digital signature and key
+# encipherment`, which names no extended key usage at all.
+#
+# So a future leaf that omits `usages`, or that names both "to make the
+# handshake work", removes the separation silently, with a green Argo sync and
+# a Ready certificate. This repository's CI does not validate manifests at all,
+# and review is a weak gate against a default. `.pre-commit-config.yaml`
+# therefore carries `certificate-usages`, which refuses both shapes for every
+# Certificate UNDER `infra/` that names `yadgar-internal-ca`. The shared
+# `ci-pr` workflow runs every hook this repository declares with no SKIP list,
+# so the hook gates the pull request and not only the commit.
+#
+# THE SCOPE OF THE GATE IS THAT PATH AND NOTHING WIDER. A Certificate defined
+# in a chart or in another repository names the same issuer and is gated by
+# nothing, so this hook is a gate on THIS directory rather than a property of
+# the authority. Nothing outside `infra/` issues from this root today; the day
+# something does, it needs its own check.
+#
+# ── PER SERVICE, NOT PER HOP ────────────────────────────────────────────────
+# Three certificates for four hops, because a certificate says WHO THE CALLER IS
+# and the destination is not part of an identity. `gateway` dials both `iam` and
+# `task`, and it is one caller either way: it gets ONE identity, one mount, one
+# expiry to watch, where a per-hop scheme would give it two of each.
+#
+# A per-hop certificate would also assert something no server can act on. `iam`
+# cannot tell "issued for the gateway-to-iam hop" from "issued for the
+# gateway-to-task hop" without reading the name out of the certificate — and if
+# it reads the name, per-service already carries it. So per-hop costs more
+# material and buys no check that per-service does not.
+#
+# The callers are the three services that dial another over gRPC:
+#
+#   gateway → iam        gateway → task
+#   iam     → iam-db     task    → task-db
+#
+# `iam-db` and `task-db` get none: they answer, they never call. A service that
+# LATER becomes a caller needs its own leaf here, and its absence will show up
+# as a refused handshake rather than as a quiet cleartext hop, which is the
+# failure mode worth having.
+#
+# ── WHAT THE SERVER LEARNS FROM THIS, AND WHAT IT DOES NOT ──────────────────
+# READ THIS BEFORE BUILDING THE SERVER HALF. A client certificate proves
+# possession of a key this deployment's authority signed. That is ALL it proves.
+# `ServerTlsConfig::client_ca_root` gives authentication, not authorisation: it
+# answers "is this peer one of ours", never "is this peer allowed to call ME".
+#
+# So with this material and nothing else, `task` can open a connection to
+# `iam-db` — it holds a client certificate from the right authority. mTLS as
+# specified here closes the OUTSIDE-THE-DEPLOYMENT threat. It does not close the
+# lateral one.
+#
+# The `commonName` and the DNS name below carry the CALLER'S IDENTITY so that
+# check BECOMES POSSIBLE: a server can read the peer certificate off the
+# connection and compare. **That check does not exist, and this car does not
+# build it** — there is no contract anywhere in this estate saying which caller
+# may invoke which method, and inventing an allow-list here would be building an
+# authorisation mechanism nobody has decided on. The gap is named so the next
+# car decides it deliberately. When it is decided, the natural shape is a chart
+# value on the SERVER — a list of accepted names — because that keeps it
+# configuration under D80 rather than a compiled-in topology.
+#
+# ── ONE NAME, AND DELIBERATELY NOT A NAME ANYTHING RESOLVES ─────────────────
+# The serving certificates list `iam`, `iam.yadgar`, `iam.yadgar.svc` and the
+# full FQDN because a client verifies the name it DIALLED, and a caller in
+# another namespace dials a longer one. Nobody dials a client. The name here is
+# an identity string, so it is exactly one, and adding the FQDN forms would only
+# create three more spellings of the same caller for a future name check to
+# disagree about.
+#
+# IT IS `<service>-caller` AND NOT `<service>`, WHICH IS THE WHOLE POINT. These
+# leaves first carried the caller's own Service name — `iam-client-tls` had the
+# SAN `iam` — and `iam` is a name this cluster ACTUALLY DIALS. Put that beside
+# the trap above and one omitted `usages` block turns a client leaf into a
+# valid SERVING certificate for a real destination. `gateway-caller`,
+# `iam-caller` and `task-caller` resolve to nothing, in this namespace or any
+# other, so the same mistake yields a certificate for a host nobody reaches.
+# `yadgarhq/dial`'s own rig already spells an identity this way, as
+# `yadgar-dial-test-caller`.
+#
+# THE NON-RESOLVABILITY IS AN INVARIANT, not a coincidence. Never give a
+# Service one of these names, and never spell an identity here as a Service
+# name. The "exactly one name" argument above is satisfied identically either
+# way, so the safe spelling costs nothing.
+#
+# ── WHAT THIS MEANS FOR THE ROTATION WATCHER (ADR-0523) ─────────────────────
+# STATED BECAUSE IT IS A REQUIREMENT ON THE NEXT CAR, not a note.
+#
+# These leaves carry the same 90-day duration, the same 30-day renewal window
+# and the same `rotationPolicy: Always` as the serving ones. A caller reads its
+# certificate and key ONCE, when it builds its channel, from a directory mount
+# kubelet refreshes in place — which is exactly the shape ADR-0523's watcher
+# exists for. **So the client certificate and key MUST join that watch set in
+# the chart change that mounts them.** The test is not "is it transport
+# material" but "is it read once from a directory mount that rotates", and these
+# are.
+#
+# The consequence of forgetting is worse here than for a serving certificate.
+# ADR-0516 makes certificates load-bearing for AVAILABILITY: an expired client
+# certificate does not weaken a hop, it stops it. A process that never re-reads
+# a renewed client leaf works until the leaf it read expires — NINETY days
+# after that leaf was issued, and thirty days after its replacement was already
+# on disk. `renewBefore: 720h` rewrites the Secret at day 60; the leaf already
+# in memory stays valid to its own `notAfter` at day 90. The failure therefore
+# arrives a month after the material that would have prevented it was in place,
+# on a date nobody is watching.
+#
+# ── WHAT THIS FILE DOES NOT NEED, AND WHY THERE IS NO FOURTH OBJECT ─────────
+# The SERVER side needs no change in this repository. A server verifying its
+# callers must trust `yadgar-internal-ca`, and every server already mounts a
+# Secret containing exactly that certificate: cert-manager writes `ca.crt` into
+# each `<service>-tls` Secret alongside `tls.crt` and `tls.key`. Its chart
+# selects only the two it serves with today, so the server half is one more key
+# in an existing volume's `items:` list — a change in the service's own
+# repository, not here.
+#
+# No Secret holding the CA on its own is created for that, deliberately. The
+# `yadgar-internal-ca` Secret holds the root's PRIVATE KEY, and mounting it into
+# a service pod would hand every service the ability to issue certificates for
+# every other one.
+---
+# gateway → iam, and gateway → task. ONE identity for both, per the argument
+# above. The gateway is the only caller here that is not also a server, so this
+# is the only service whose pod gains TLS material it did not previously hold in
+# some form.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-client-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: gateway-client-tls
+  # NOT `gateway`. An identity, not a Service name — see the header.
+  commonName: gateway-caller
+  dnsNames:
+    - gateway-caller
+  duration: 2160h # 90d, the same as the serving leaves
+  renewBefore: 720h # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    # A new key on every renewal, matching the serving leaves. A long-lived key
+    # behind a short-lived certificate makes the rotation cosmetic.
+    rotationPolicy: Always
+  usages:
+    # `client auth` AND NOT `server auth`. This is the separation that replaces
+    # a second certificate authority — read the header before changing it.
+    # `digital signature` is the plain key usage a TLS 1.3 handshake exercises,
+    # named rather than left to a default so that dropping a default later
+    # cannot quietly break the handshake.
+    - client auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+# iam → iam-db. `iam` also SERVES, under `iam-tls`; the two certificates are
+# different material for opposite directions and neither substitutes for the
+# other.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: iam-client-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: iam-client-tls
+  # NOT `iam`, which is a Service this cluster dials — see the header.
+  commonName: iam-caller
+  dnsNames:
+    - iam-caller
+  duration: 2160h # 90d
+  renewBefore: 720h # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - client auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+# task → task-db. `task` also serves, under `task-tls`; same distinction as
+# `iam` above.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: task-client-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: task-client-tls
+  # NOT `task`, which is a Service this cluster dials — see the header.
+  commonName: task-caller
+  dnsNames:
+    - task-caller
+  duration: 2160h # 90d
+  renewBefore: 720h # 30d
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - client auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
