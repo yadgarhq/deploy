@@ -47,6 +47,41 @@ spec:
         # including its own reply inbox, on purpose — a compromised gateway
         # cannot forge the revocation it is supposed to be receiving.
         #
+        # `iam` IS PUBLISH-ONLY ON THE SAME TWO SUBJECTS (ledger 68), the mirror
+        # of the block above. Until this landed it carried NO `permissions` key
+        # at all, which in NATS is publish and subscribe on `>` — so the account
+        # the paragraph below argues for adding rather than sharing was itself
+        # unrestricted, and a compromised `iam` could publish on D25's audit
+        # subjects and read every other account's traffic.
+        #
+        # THE THREE THINGS THAT MADE THIS SAFE TO NARROW, each read out of
+        # `yadgarhq/iam` rather than assumed:
+        #
+        # - It publishes exactly two subjects, and that is a property of the
+        #   code rather than a count of call sites. `Invalidator::publish` is
+        #   private and takes `&'static str`; the only two callers are
+        #   `credential_revoked` and `teams_changed`, each passing one of the
+        #   two `subject::` constants. Nothing else can reach it.
+        # - It never subscribes and never does request/reply, so it needs no
+        #   `_INBOX.>` — the same finding as `gateway`, reached the same way.
+        #   `async_nats` 0.50 writes `CONNECT` + `PING` and nothing else at
+        #   connect (`connector.rs`, "Send CONNECT + PING, then wait for
+        #   PONG"), holds only the inbox PREFIX on the client, and creates the
+        #   inbox subscription inside `send_request` — which `iam` never calls.
+        #   `flush()` is a `PING`, not a subject.
+        # - JetStream is not in play. `invalidate.rs` publishes on core NATS
+        #   deliberately (every gateway replica must receive the event, so no
+        #   queue group and no consumer), so there is no `$JS.API.>` request
+        #   and no deliver-subject inbox to allow.
+        #
+        # GETTING THIS LIST WRONG IS SILENT AT THE PUBLISHER, which is why it
+        # was rendered and probed rather than reasoned about. A permissions
+        # violation on publish is an asynchronous `-ERR` from the server;
+        # `client.publish()` has already returned `Ok(())` by then, and
+        # `invalidate.rs` only logs the `Err` arm. So a subject dropped from
+        # this list does not fail a revocation loudly — it makes every
+        # revocation late, with nothing in `iam`'s log to say so.
+        #
         # THE HEADER OF THIS FILE DESCRIBES MORE THAT WILL ARRIVE, and the
         # difference is the thing to notice. It names the write path (D11, D39)
         # and D25's audit outbox relay, which are what this broker is FOR — none
@@ -94,6 +129,13 @@ spec:
               users:
                 - user: iam
                   password: << $NATS_PASSWORD >>
+                  permissions:
+                    publish:
+                      allow:
+                        - "yadgar.iam.credential.revoked"
+                        - "yadgar.iam.user.teams-changed"
+                    subscribe:
+                      deny: ">"
                 - user: gateway
                   password: << $NATS_PASSWORD_GATEWAY >>
                   permissions:

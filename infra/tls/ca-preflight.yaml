@@ -56,11 +56,28 @@
 # on every sync is safe by construction — it performs one read and mutates
 # nothing, so a resync loop here is, at worst, cosmetic.
 #
-# THE LOG IS NOT DURABLE, and a reader should know it. `Replace=true` under
-# selfHeal deletes and recreates this Job, and its pod and log with it, on the
-# next reconcile. The message below survives until then. It is a signpost read
-# at the moment of failure, not a record — the durable statement of this
-# requirement is MIGRATION_NOTES.md.
+# A FAILED JOB IS TERMINAL AND ARGO DOES NOT RE-RUN IT, which is the whole of
+# ledger 75 and the reason `infra/tls-app.yaml` now carries a `retry` block.
+# Once the backoffLimit below is exhausted this Job stays Failed for ever; it
+# cannot re-run itself, and Argo does not re-run it either — its documented rule
+# is that "automatic sync will not reattempt a sync if the previous sync attempt
+# against the same commit-SHA and parameters had failed", and creating the
+# Secret is neither. selfHeal does not rescue it: selfHeal acts on DRIFT, and a
+# Failed Job's spec still matches git exactly. So this stayed Degraded on this
+# cluster after an operator created the Secret — the cause fixed, the symptom
+# permanent, cleared only by a `kubectl delete job` run by hand. `retry`
+# supplies the sync operation that otherwise never comes; the argument for it,
+# and against solving this with `ttlSecondsAfterFinished` or with an exit code
+# of 0, is in that file beside the block.
+#
+# THE LOG IS NOT DURABLE, and a reader should know it. `Replace=true` deletes
+# and recreates this Job, and its pod and log with it, on the next SYNC — which
+# is not the same thing as the next reconcile, and that difference is exactly
+# what the paragraph above is about. While the Secret is missing a retry
+# attempt arrives every few minutes, so the message below is rewritten about
+# that often. It is a signpost read at the moment of failure,
+# not a record — the durable statement of this requirement is
+# MIGRATION_NOTES.md.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -175,9 +192,17 @@ spec:
                     'you load it: its nameConstraints must permit the DNS name' \
                     'the gateway serves. This check does not verify that.' \
                     '' \
-                    'Then wait for selfHeal. Do not resync by hand while this' \
-                    'Job is still backing off - the sync operation is in flight' \
-                    'and Argo refuses a second one.' >&2
+                    'Then wait. Argo retries this failed sync on its own, every' \
+                    'few minutes (the retry block in tls-app.yaml), and each' \
+                    'attempt recreates this Job - so it re-reads the API server' \
+                    'and goes green with no further command. Do not resync by' \
+                    'hand meanwhile: the operation is in flight and Argo' \
+                    'refuses a second one.' \
+                    '' \
+                    'That budget is 60 attempts - hours, not minutes, but not' \
+                    'unlimited. If it has run out, one command starts it again:' \
+                    '' \
+                    '  kubectl -n cert-manager delete job yadgar-tls-preflight' >&2
                   exit 1
                   ;;
                 *)
