@@ -31,3 +31,25 @@ repos:
       # No Containerfile here yet; the hook is a no-op until one arrives, which is
       # cheaper than remembering to add it on the day it does.
       - id: hadolint
+
+  # LOCAL, and not in the shared repository, because it encodes a fact about
+  # THIS deployment: one authority signs both the serving and the client leaves
+  # under infra/internal-tls/, so their `usages` lists are the only thing
+  # keeping the two directions apart. A leaf that omits `usages` gets no
+  # extended key usage from cert-manager and is valid in both — the default is
+  # the unsafe value, which is why this is a gate rather than a review note.
+  #
+  # This repository has no manifest validation in CI, so a hook is the whole of
+  # it. The shared `ci-pr` workflow runs every hook declared here with no SKIP
+  # list, which is what makes a pre-commit hook gate the pull request too.
+  #
+  # `language: python` rather than `system`: pre-commit builds the environment
+  # and installs PyYAML, which the CI runner's bare interpreter does not carry.
+  - repo: local
+    hooks:
+      - id: certificate-usages
+        name: internal-CA leaves name exactly one direction
+        entry: python scripts/check-certificate-usages.py
+        language: python
+        additional_dependencies: [pyyaml]
+        files: ^infra/.*\.yaml$
