@@ -17,6 +17,11 @@
 # intended behaviour: the alternative is an issuer that quietly mints its own
 # untrusted root, which would look healthy while serving a certificate nothing
 # trusts.
+#
+# AND EXPECT IT TO BECOME HEALTHY ON ITS OWN ONCE THAT STEP HAS RUN, which is
+# what `retry` below buys and what ledger 75 found missing. See the comment on
+# that block: without it the preflight Job's own failure is the thing that keeps
+# this Application Degraded after the cause is fixed.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -36,3 +41,47 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true]
+    # RETRY IS WHAT MAKES THE PREFLIGHT RECOVERABLE (ledger 75), and it belongs
+    # here rather than on the Job because the thing that never happens again is
+    # a SYNC OPERATION, not a reconcile.
+    #
+    # A Job is terminal: once `infra/tls/ca-preflight.yaml` exhausts its
+    # backoffLimit it stays Failed for ever and never re-runs itself. Argo does
+    # not re-run it either, and the reason is Argo's own documented rule rather
+    # than an inference — "automatic sync will not reattempt a sync if the
+    # previous sync attempt against the same commit-SHA and parameters had
+    # failed". Creating the Secret is neither a commit nor a parameter, so
+    # fixing the cause changes nothing Argo looks at. `selfHeal` does not rescue
+    # it either: selfHeal acts on DRIFT, and a Failed Job's spec still matches
+    # git exactly, so there is nothing for it to act on. Observed on this
+    # cluster: an operator created the missing Secret, the cause was gone, and
+    # `Application/tls` stayed Degraded until `kubectl delete job` was run by
+    # hand — precisely the undocumented step the preflight exists to delete.
+    #
+    # `retry` manufactures the missing sync operation. Each attempt re-syncs
+    # every wave, and the Job carries `Replace=true,Force=true`, so each attempt
+    # deletes and recreates it — a fresh read of the API server rather than a
+    # stale verdict. The moment the Secret is there the Job succeeds, wave -1
+    # opens, and the rest of the Application applies.
+    #
+    # NOTHING CHANGES ON A HEALTHY CLUSTER: retry fires only after a sync
+    # operation FAILS, so there is no loop and no extra pod while the Secret is
+    # present. That is the property `ttlSecondsAfterFinished` on the Job cannot
+    # have — a TTL deletes a SUCCESSFUL Job too, and Argo then recreates it, so
+    # a working cluster would churn a pod for ever at whatever period the TTL
+    # set, and the same number would bound how long a failure message survives.
+    #
+    # BOUNDED, NOT UNLIMITED, and the bound is the point rather than a rounding.
+    # A retrying operation pins the revision it started on, and Argo starts no
+    # second operation while one is in flight — so `limit: -1` would leave a
+    # broken `tls` unable to pick up the very commit that fixes it. 60 attempts,
+    # each waiting up to 5m and then spending the Job's own pod backoff on the
+    # way to Failed, is hours rather than minutes — the scale on which somebody
+    # fetches a root CA out of 1Password. After that the operation gives up and
+    # the NEXT commit syncs normally.
+    retry:
+      limit: 60
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

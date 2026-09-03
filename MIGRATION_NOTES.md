@@ -748,6 +748,12 @@ echo "renewalTime: $RENEWAL — ${MARGIN_DAYS} days of margin"
 > the window between the delete and the create halts that wave. Run the two
 > commands together, and expect `Application/tls` to report the preflight's
 > failure until the new Secret is in place.
+>
+> Nothing has to be done to clear it afterwards. A failed Job is terminal and
+> never re-runs itself, and Argo does not reattempt a sync that already failed
+> against the same commit, so this used to need a `kubectl delete job` by hand.
+> `infra/tls-app.yaml` now carries a `retry` block, and Argo re-runs the whole
+> sync — recreating the Job — every few minutes until it passes.
 
 ```bash
 kubectl --context kind-yadgar -n cert-manager delete secret yadgar-dev-ca
@@ -922,6 +928,12 @@ edge" used to load it in the first place:
 > the window between the delete and the create halts that wave. Run the two
 > commands together, and expect `Application/tls` to report the preflight's
 > failure until the new Secret is in place.
+>
+> Nothing has to be done to clear it afterwards. A failed Job is terminal and
+> never re-runs itself, and Argo does not reattempt a sync that already failed
+> against the same commit, so this used to need a `kubectl delete job` by hand.
+> `infra/tls-app.yaml` now carries a `retry` block, and Argo re-runs the whole
+> sync — recreating the Job — every few minutes until it passes.
 
 ```bash
 kubectl --context kind-yadgar -n cert-manager delete secret yadgar-dev-ca
