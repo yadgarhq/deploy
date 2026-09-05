@@ -174,8 +174,10 @@
 # certificate does not weaken a hop, it stops it. A process that never re-reads
 # a renewed client leaf works until the leaf it read expires — NINETY days
 # after that leaf was issued, and thirty days after its replacement was already
-# on disk. `renewBefore: 720h` rewrites the Secret at day 60; the leaf already
-# in memory stays valid to its own `notAfter` at day 90. The failure therefore
+# on disk. `renewBefore` — 750h, 756h and 762h for these three, staggered on
+# the ladder argued in `certificates.yaml` — rewrites the Secret a little before
+# day 59; the leaf already in memory stays valid to its own `notAfter` at day
+# 90. The failure therefore
 # arrives a month after the material that would have prevented it was in place,
 # on a date nobody is watching.
 #
@@ -211,7 +213,7 @@ spec:
   dnsNames:
     - gateway-caller
   duration: 2160h # 90d, the same as the serving leaves
-  renewBefore: 720h # 30d
+  renewBefore: 750h # 30d +30h; the ladder in certificates.yaml
   privateKey:
     algorithm: ECDSA
     size: 256
@@ -248,7 +250,7 @@ spec:
   dnsNames:
     - iam-caller
   duration: 2160h # 90d
-  renewBefore: 720h # 30d
+  renewBefore: 756h # 30d +36h; the ladder in certificates.yaml
   privateKey:
     algorithm: ECDSA
     size: 256
@@ -277,7 +279,7 @@ spec:
   dnsNames:
     - task-caller
   duration: 2160h # 90d
-  renewBefore: 720h # 30d
+  renewBefore: 762h # 30d +42h; the ladder in certificates.yaml
   privateKey:
     algorithm: ECDSA
     size: 256

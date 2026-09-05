@@ -32,16 +32,95 @@
 # is not projected into the client's pod.
 #
 # ── RENEWAL, AND THE RESIDUAL THAT COMES WITH IT ────────────────────────────
-# cert-manager renews at two thirds of the duration and rewrites the Secret in
-# place, with no human involved — the reason certificates are its job rather
-# than the bootstrap Job's. But EVERY SERVICE READS ITS CERTIFICATE ONCE AT
-# BOOT, so a rewritten Secret does not reach a running process. With 90 days and
-# a 30-day renewal window a pod must therefore restart within 90 days of its
-# certificate being issued, or it serves an expired one.
+# cert-manager renews about two thirds of the way through the duration and
+# rewrites the Secret in place, with no human involved — the reason certificates
+# are its job rather than the bootstrap Job's. But EVERY SERVICE READS ITS
+# CERTIFICATE ONCE AT BOOT, so a rewritten Secret does not reach a running
+# process. With 90 days and a renewal window of thirty days or a little more —
+# the ladder below moves each leaf's window, never its expiry — a pod must
+# therefore restart within 90 days of its certificate being issued, or it serves
+# an expired one.
 #
 # That is stated rather than solved here, and it blocks nothing while
 # `tls.enabled` is false. Whoever performs the cut-over owns it: either a
 # rollout triggered by the Secret's revision, or an accepted maximum pod age.
+#
+# ── THE RENEWAL INSTANT IS STAGGERED, ONE SERVICE PER INSTANT ───────────────
+# EVERY LEAF UNDER THIS DIRECTORY CARRIES A DISTINCT `renewBefore`. The values
+# differ for a reason rather than by accident, so read this before adding one
+# and before tidying them back to a single number.
+#
+# These certificates were all issued in one bootstrap, so a shared
+# `renewBefore` gave them a shared renewal INSTANT. Measured against the live
+# cluster on 2026-09-05: `.status.renewalTime` held three values for eight
+# leaves, and `iam-tls`, `iam-db-tls`, `task-tls` and `task-db-tls` sat on the
+# same second.
+#
+# THAT MATTERS BECAUSE OF ADR-0523. A process whose watched material changes
+# waits out a random splay, drains, and EXITS 0. Every chart sets
+# `tlsRotation.splayMaxSeconds: 300`, and each pod draws its splay from
+# `[0, 300)` independently — which separates the two replicas of ONE service
+# and does nothing at all to separate one service from another, because every
+# service draws from the same interval starting at the same instant. Two
+# services sharing an instant therefore put all four of their pods through a
+# restart inside one five-minute window.
+#
+# A PodDisruptionBudget cannot hold that. A PDB constrains EVICTION, and a pod
+# that exits 0 of its own accord was never evicted.
+#
+# THE INVARIANT THIS SCHEDULE BUYS: at every renewal instant, at most one
+# service restarts. The closest two instants are 2h44m19s apart, against a
+# 300-second splay window.
+#
+# ── WHY `renewBefore` AND NOT `duration` ────────────────────────────────────
+# The argument is stronger than "the expiry does not move". `duration` is part
+# of the certificate cert-manager ISSUED, so changing it makes the issued
+# material differ from the spec and a re-issuance follows. `renewBefore` drives
+# only the trigger controller's clock and is not compared against issued
+# material, so changing it RESCHEDULES without minting anything.
+#
+# ── WHY A 6-HOUR LADDER, AND WHY IT CANNOT RE-LOCK ──────────────────────────
+# `renewalTime = notAfter - renewBefore`, exactly — checked against all nine
+# live rows, with no jitter of any kind. So a distinct `renewBefore` is a
+# distinct instant AND a distinct period: a leaf renews every
+# `duration - renewBefore`, which is 1434h at the near end of this ladder and
+# 1398h at the far one.
+#
+# THE SEPARATIONS THEREFORE GROW RATHER THAN DRIFTING BACK TOGETHER, which is
+# the property that makes this durable rather than a one-off nudge. Among
+# leaves sharing a `notAfter`, the one that renews EARLIER has the LARGER
+# `renewBefore` and so the SHORTER period, and moves earlier still on every
+# cycle. Across the two `notAfter` groups the offset is 2h44m19s, which is not
+# a multiple of the 6-hour step, so no number of cycles brings such a pair onto
+# the same instant either. The margin is hours and cert-manager reconciles
+# within minutes, so the algebra does not need to be exact to hold.
+#
+# A NEW CERTIFICATE TAKES THE NEXT STEP — 768h, then 774h. Never a value that
+# is already in use.
+#
+# ── 720h IS DELIBERATELY UNUSED HERE ────────────────────────────────────────
+# It belongs to the EDGE leaf, `infra/tls/certificate.yaml`, which is left
+# alone rather than overlooked. Envoy Gateway reloads that one through xDS
+# instead of restarting, and the only pod mounting its Secret is `iam`, which
+# selects `ca.crt` — the authority, not the leaf. No process exits on it.
+# Keeping it out of the ladder costs nothing and leaves every `renewBefore` in
+# this repository distinct.
+#
+# ── DO NOT TRY TO ALIGN A SERVICE'S TWO CERTIFICATES ────────────────────────
+# `iam` reads `iam-tls` and will read `iam-client-tls`; landing both on one
+# instant so it restarts once instead of twice looks tempting and CANNOT BE
+# MADE TO HOLD. After the first renewal `notAfter` is the renewal instant plus
+# `duration`, so any alignment computed from today's `notAfter` dissolves on
+# the first cycle. Two separate single-service restarts are the shape that
+# survives, and each is smaller than the joint one would have been.
+#
+# ── `iam-db-tls` AND `task-db-tls` ARE STAGGERED THOUGH NOTHING WATCHES THEM ─
+# `iam-db` and `task-db` build `yadgar-lifecycle` with
+# `default-features = false`, which compiles the rotation watcher — and the
+# expiry gauge beside it — out of the binary entirely. Neither reacts to a
+# renewal today. They are scheduled here anyway so the schedule is already
+# correct on the day a watcher is added, rather than being one more thing to
+# remember then.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -58,7 +137,7 @@ spec:
     - iam.yadgar.svc
     - iam.yadgar.svc.cluster.local
   duration: 2160h # 90d, the same as the edge certificate
-  renewBefore: 720h # 30d
+  renewBefore: 726h # 30d +6h; the ladder in this file's header
   privateKey:
     algorithm: ECDSA
     size: 256
@@ -129,7 +208,7 @@ spec:
     - iam-db.yadgar.svc
     - iam-db.yadgar.svc.cluster.local
   duration: 2160h # 90d
-  renewBefore: 720h # 30d
+  renewBefore: 738h # 30d +18h; the ladder in this file's header
   privateKey:
     algorithm: ECDSA
     size: 256
@@ -158,7 +237,7 @@ spec:
     - task.yadgar.svc
     - task.yadgar.svc.cluster.local
   duration: 2160h # 90d
-  renewBefore: 720h # 30d
+  renewBefore: 732h # 30d +12h; the ladder in this file's header
   privateKey:
     algorithm: ECDSA
     size: 256
@@ -187,7 +266,7 @@ spec:
     - task-db.yadgar.svc
     - task-db.yadgar.svc.cluster.local
   duration: 2160h # 90d
-  renewBefore: 720h # 30d
+  renewBefore: 744h # 30d +24h; the ladder in this file's header
   privateKey:
     algorithm: ECDSA
     size: 256
