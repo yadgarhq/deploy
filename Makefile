@@ -23,13 +23,17 @@ ARGOCD_REPO ?= ../argocd
 
 .PHONY: bootstrap secrets status ui password sync
 
-# THE TWO SECRETS GITOPS CANNOT CARRY, loaded before anything syncs.
+# THE THREE SECRETS GITOPS CANNOT CARRY, loaded before anything syncs.
 #
-# Both are DATA-BEARING and neither is auto-generated: `yadgar-dev-ca` is the
-# development root (ADR-0518), and `iam-keys` is the pair `iam` encrypts identity
-# with — lose it and every stored name is unreadable (ledger 452). They cannot
-# arrive through git because this repository is PUBLIC, and they cannot be
-# generated on demand because a fresh key decrypts nothing that came before.
+# All are DATA-BEARING and none is auto-generated: `yadgar-dev-ca` is the
+# development root (ADR-0518), `iam-keys` is the pair `iam` encrypts identity
+# with — lose it and every stored name is unreadable (ledger 452) — and
+# `estate-runner-github` is the `yadgarhq-bot` App credential the ARC listener
+# authenticates with (ledger 610). They cannot arrive through git because this
+# repository is PUBLIC, and the first two cannot be generated on demand because a
+# fresh key decrypts nothing that came before. The third CAN be regenerated — a
+# GitHub App may hold several private keys — but only by a person at a browser,
+# which is the same problem for a cluster recreate.
 #
 # SO THEY ARE THE ONE THING A CLUSTER RECREATE USED TO NEED A HUMAN TO REMEMBER,
 # and forgetting was invisible in different ways for each. The CA announces
@@ -38,16 +42,29 @@ ARGOCD_REPO ?= ../argocd
 # reason only in `kubectl describe`, and Argo reports the Application Healthy
 # throughout. Both were missing after the 2026-09-05 recreate.
 #
+# `estate-runner-github` is the quietest of the three. Argo has no health check
+# for `actions.github.com` kinds, so the Application reports Synced AND Healthy
+# with no runner at all; the only evidence is `failed to resolve app config` in
+# the controller's log, in a different namespace. Every dispatched smoke run then
+# queues until GitHub cancels it, and the workflow's history reads as cancelled
+# runs rather than as a missing credential.
+#
 # IT RUNS BEFORE `bootstrap` INSTALLS ANYTHING, as a prerequisite rather than a
 # step, so a missing 1Password item fails while the cluster is still empty
 # rather than half-built.
 #
 # Idempotent: every write is `--dry-run=client | kubectl apply`, so re-running on
-# a cluster that already holds them is a no-op rather than an error. The two
-# namespaces are created here because the Secrets need somewhere to live before
-# the Applications that own those namespaces have synced; Argo adopts them.
+# a cluster that already holds them is a no-op rather than an error — though a
+# CHANGED source value is a rotation rather than a no-op, which is the intended
+# behaviour. After rotating `estate-runner-github`, delete the listener pod in
+# `arc-systems`: it does not re-read the Secret on its own.
+#
+# The three namespaces are created here because the Secrets need somewhere to
+# live before the Applications that own those namespaces have synced. Argo adopts
+# them with no friction — its Applications use `CreateNamespace=true` and hold no
+# `kind: Namespace` in git, so it applies no tracking label and produces no diff.
 secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password. Idempotent.
-	@command -v op >/dev/null || { 		echo "The 1Password CLI (op) is not on PATH."; 		echo "Both secrets are data-bearing and live only there — see"; 		echo "MIGRATION_NOTES.md, 'The identity encryption keys' and"; 		echo "'The development TLS edge'."; 		exit 1; }
+	@command -v op >/dev/null || { 		echo "The 1Password CLI (op) is not on PATH."; 		echo "All three secrets are data-bearing and live only there — see"; 		echo "MIGRATION_NOTES.md, 'The identity encryption keys', 'The development"; 		echo "TLS edge' and 'The estate-front runner'."; 		exit 1; }
 	@op account list >/dev/null 2>&1 || { 		echo "The 1Password CLI is not signed in. Run 'op signin' first."; 		exit 1; }
 	kubectl create namespace cert-manager \
 		--dry-run=client -o yaml | kubectl apply -f -
@@ -59,7 +76,7 @@ secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password
 		--key  <(op read "op://Private/yadgar-dev-ca/private key") \
 		--dry-run=client -o yaml | kubectl apply -f -
 	@set -euo pipefail; \
-	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.key 2>/dev/null || true; rmdir "$$d"' EXIT; \
+	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.key 2>/dev/null || true; rmdir "$$d" || true' EXIT; \
 	 ( umask 077; \
 	   op document get "yadgar iam — encryption key"  --out-file "$$d/encryption.key"; \
 	   op document get "yadgar iam — blind index key" --out-file "$$d/blind-index.key" ); \
@@ -70,8 +87,14 @@ secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password
 		--dry-run=client -o yaml | kubectl apply -f -
 	kubectl create namespace estate-front \
 		--dry-run=client -o yaml | kubectl apply -f -
+	@op document get "yadgar — yadgarhq-bot App private key" >/dev/null 2>&1 || { \
+		echo "The 1Password document 'yadgar — yadgarhq-bot App private key' was not found."; \
+		echo "It is the yadgarhq-bot App private key the ARC listener authenticates"; \
+		echo "with. The title is matched exactly, so a rename breaks this."; \
+		echo "To recreate it, see MIGRATION_NOTES.md, 'The estate-front runner'."; \
+		exit 1; }
 	@set -euo pipefail; \
-	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.pem 2>/dev/null || true; rmdir "$$d"' EXIT; \
+	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.pem 2>/dev/null || true; rmdir "$$d" || true' EXIT; \
 	 ( umask 077; \
 	   op document get "yadgar — yadgarhq-bot App private key" --out-file "$$d/yadgarhq-bot.pem" ); \
 	 kubectl create secret generic estate-runner-github \

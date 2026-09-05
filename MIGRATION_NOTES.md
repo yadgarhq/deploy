@@ -1102,7 +1102,8 @@ that does this. The shape is:
   image, which registers itself with GitHub, executes the job, and is destroyed.
   `minRunners: 0`, so nothing exists between jobs and an idle cluster is correct.
 
-Hence exactly two operator steps, and each maps to one of those bullets:
+Hence two operator steps, and each maps to one of those bullets. Only the first
+is still manual — `make secrets` took the second:
 
 1. **The runner image** is what the runner pod is made from. The stock
    `ghcr.io/actions/actions-runner` image has no Rust toolchain, and the smoke
@@ -1127,8 +1128,14 @@ this section suggests:
 | `deploy/arc-gha-rs-controller`              | **Running**, 1/1                         |
 | `AutoscalingRunnerSet/estate-front`         | **exists** — min 0, max 2, `STATE` empty |
 | Secret `estate-front/estate-runner-github`  | **`make secrets` creates it**            |
-| `ghcr.io/yadgarhq/estate-runner:0.1.0`      | **does not exist yet**                   |
-| runner pods in `estate-front`               | none, and correctly so                   |
+
+The pod row is the one that moves: with no Secret there are no runner pods, and
+that is correct. The moment the Secret lands, the listener claims whatever smoke
+run is still queued and creates a runner pod — which then blocks on the image
+step 1 has not built. A pod in `ImagePullBackOff` at that stage is progress, not
+a regression.
+| `ghcr.io/yadgarhq/estate-runner:0.1.0` | **does not exist yet** |
+| runner pods in `estate-front` | none, and correctly so |
 
 **Do step 2 before step 1**, and step 2 is now just `make secrets`. The Secret is
 what unblocks registration and it is testable on its own: create it, and an
@@ -1140,22 +1147,32 @@ exists.
 manager, so it stays an operator step until it is built and pushed once.
 
 **The symptom on the GitHub side, so it is recognisable.** Every `smoke` run
-queues for ever against `runs-on: estate-front` and is eventually auto-cancelled.
-Measured on 2026-09-05: 8 cancelled, 2 queued, **0 successful — the workflow has
-never once produced a verdict.** They arrive in batches of five (one
-`module-rolled` dispatch per module) and each batch leaves four cancelled and one
-stuck.
+queues against `runs-on: estate-front` and is eventually cancelled. Measured
+2026-09-05: **0 successful — the workflow has never once produced a verdict.**
 
-**Four of five are cancelled DESPITE `cancel-in-progress: false`, and that is not
-a contradiction.** GitHub's concurrency allows one _running_ run plus one
-_pending_ run. `cancel-in-progress: false` protects the run that is IN PROGRESS;
-it says nothing about the pending one, and a newly arriving run always displaces
-whatever is pending. Because no run can start without a runner, there is never an
-in-progress run to protect, so each new dispatch cancels its predecessor. The
-comment above that setting in `smoke.yaml` — "Queue rather than cancel: a
-cancelled smoke run is a roll with no verdict" — describes an intent the missing
-runner defeats. **Fixing the runner fixes the cancellations**; there is nothing
-wrong with the concurrency block.
+**WHY SO MANY ARE CANCELLED DESPITE `cancel-in-progress: false`.** The obvious
+reading — that the setting is being ignored — is wrong, and so is the reading
+this section carried first, that "no run ever starts, so there is nothing to
+protect". Both are refuted by the run data.
+
+A run that passes the concurrency gate OCCUPIES the group even while its jobs sit
+`status: queued` waiting for a runner. It is the protected occupant, and
+`cancel-in-progress: false` is what protects it — run 33971568146 (14:21:27Z) was
+still alive four hours and fourteen dispatches later. GitHub's concurrency-blocked
+status is a different one, `pending`, and that is the single waiting slot. Each
+arriving run takes that slot and cancels whoever held it.
+
+The timestamps prove it rather than suggest it: every cancellation's `updated_at`
+is one second after the NEXT run's `created_at` (18:24:57/18:24:56,
+18:25:04/18:25:03, 18:25:35/18:25:34). And run 33977748368, dispatched at
+16:24:09Z, was not cancelled until 18:24:44Z — by the following batch, two hours
+later. So the shape is global, not per batch: **one occupant, one pending slot,
+everything else cancelled.** An earlier revision here claimed "four cancelled and
+one stuck per batch"; the 16:23 batch actually left five cancelled and no
+survivor.
+
+**The concurrency block is correct and needs no change.** Fixing the runner fixes
+the cancellations, because the occupant will then finish and free the group.
 
 **The controller's own error, so you can confirm the diagnosis rather than trust
 this table:**
@@ -1301,7 +1318,15 @@ make bootstrap   # runs secrets first
 
 It is idempotent the same way the other two are — `--dry-run=client -o yaml |
 kubectl apply -f -` — so re-running it on a cluster that already has the Secret
-is a no-op rather than an error. The private key goes through a `mktemp -d` file
+is a no-op rather than an error.
+
+**"No-op" holds only while the 1Password copy is unchanged.** If the document
+holds a DIFFERENT key, this is a rotation rather than a no-op: the Secret carries
+`kubectl.kubernetes.io/last-applied-configuration`, so the three-way merge does
+update the value. That is the behaviour you want — but **the listener does not
+re-read the Secret**. After any rotation, delete the listener pod in
+`arc-systems` so it picks the new credential up; otherwise it keeps authenticating
+with the old key and nothing says so. The private key goes through a `mktemp -d` file
 created under `umask 077` and shredded by an `EXIT` trap; it never reaches argv
 or shell history. `github_app_id` and `github_app_installation_id` are passed as
 literals because neither is a secret.
@@ -1421,7 +1446,8 @@ kubectl create namespace estate-front --dry-run=client -o yaml | kubectl apply -
 kubectl -n estate-front create secret generic estate-runner-github \
   --from-literal=github_app_id=4814165 \
   --from-literal=github_app_installation_id=158692002 \
-  --from-file=github_app_private_key=./yadgarhq-bot.pem
+  --from-file=github_app_private_key=./yadgarhq-bot.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 shred -u ./yadgarhq-bot.pem
 ```
