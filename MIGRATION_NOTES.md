@@ -1126,16 +1126,18 @@ this section suggests:
 | `arc-systems` and `estate-front` namespaces | **exist**                                |
 | `deploy/arc-gha-rs-controller`              | **Running**, 1/1                         |
 | `AutoscalingRunnerSet/estate-front`         | **exists** — min 0, max 2, `STATE` empty |
-| Secret `estate-front/estate-runner-github`  | **MISSING — this is the blocker**        |
+| Secret `estate-front/estate-runner-github`  | **`make secrets` creates it**            |
 | `ghcr.io/yadgarhq/estate-runner:0.1.0`      | **does not exist yet**                   |
 | runner pods in `estate-front`               | none, and correctly so                   |
 
-**Do step 2 before step 1.** They are written image-first, but the Secret is what
-unblocks registration, and it is testable on its own: create it, and an
+**Do step 2 before step 1**, and step 2 is now just `make secrets`. The Secret is
+what unblocks registration and it is testable on its own: create it, and an
 `AutoscalingListener` pod appears in `arc-systems`. The image is not needed until
 a job is actually dispatched to a runner, which cannot happen until the listener
-exists. Doing the Secret first turns one long change into two short ones that
-each prove themselves.
+exists.
+
+**Only step 1 is still manual.** A container image cannot come out of a password
+manager, so it stays an operator step until it is built and pushed once.
 
 **The symptom on the GitHub side, so it is recognisable.** Every `smoke` run
 queues for ever against `runs-on: estate-front` and is eventually auto-cancelled.
@@ -1284,7 +1286,34 @@ at registration, so this image is rebuilt when the upstream runner is bumped.
 That is the standing cost of choosing an image over a job step, and it is
 stated rather than discovered.
 
-### 2. Create the `estate-runner-github` Secret
+### 2. Create the `estate-runner-github` Secret — **`make secrets` does this now**
+
+**There is nothing to run by hand any more.** The `secrets` target in the
+Makefile creates this Secret alongside `yadgar-dev-ca` and `iam-keys`, reading
+the key from the 1Password document `yadgar — yadgarhq-bot App private key`
+(Private vault). `bootstrap` depends on `secrets`, so a recreated cluster gets
+it without anyone remembering this section:
+
+```bash
+make secrets     # idempotent on its own
+make bootstrap   # runs secrets first
+```
+
+It is idempotent the same way the other two are — `--dry-run=client -o yaml |
+kubectl apply -f -` — so re-running it on a cluster that already has the Secret
+is a no-op rather than an error. The private key goes through a `mktemp -d` file
+created under `umask 077` and shredded by an `EXIT` trap; it never reaches argv
+or shell history. `github_app_id` and `github_app_installation_id` are passed as
+literals because neither is a secret.
+
+**If `make secrets` fails on this step**, the 1Password document is missing or
+renamed. Recreate it by the procedure below, keeping the title byte-identical —
+the Makefile looks it up by title.
+
+The rest of this section is the manual procedure, kept because it is what to do
+when the 1Password document itself has to be recreated.
+
+#### Recreating the 1Password document
 
 The listener authenticates as the **`yadgarhq-bot`** App (app_id **4814165**,
 installed organisation-wide). Not a PAT: a PAT carries a person's whole access

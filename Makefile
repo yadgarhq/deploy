@@ -46,7 +46,7 @@ ARGOCD_REPO ?= ../argocd
 # a cluster that already holds them is a no-op rather than an error. The two
 # namespaces are created here because the Secrets need somewhere to live before
 # the Applications that own those namespaces have synced; Argo adopts them.
-secrets: ## Load yadgar-dev-ca and iam-keys from 1Password. Idempotent.
+secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password. Idempotent.
 	@command -v op >/dev/null || { 		echo "The 1Password CLI (op) is not on PATH."; 		echo "Both secrets are data-bearing and live only there — see"; 		echo "MIGRATION_NOTES.md, 'The identity encryption keys' and"; 		echo "'The development TLS edge'."; 		exit 1; }
 	@op account list >/dev/null 2>&1 || { 		echo "The 1Password CLI is not signed in. Run 'op signin' first."; 		exit 1; }
 	kubectl create namespace cert-manager \
@@ -68,7 +68,19 @@ secrets: ## Load yadgar-dev-ca and iam-keys from 1Password. Idempotent.
 		--from-file=encryption.key="$$d/encryption.key" \
 		--from-file=blind-index.key="$$d/blind-index.key" \
 		--dry-run=client -o yaml | kubectl apply -f -
-	@echo "--- yadgar-dev-ca and iam-keys are loaded. ---"
+	kubectl create namespace estate-front \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@set -euo pipefail; \
+	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.pem 2>/dev/null || true; rmdir "$$d"' EXIT; \
+	 ( umask 077; \
+	   op document get "yadgar — yadgarhq-bot App private key" --out-file "$$d/yadgarhq-bot.pem" ); \
+	 kubectl create secret generic estate-runner-github \
+		--namespace estate-front \
+		--from-literal=github_app_id=4814165 \
+		--from-literal=github_app_installation_id=158692002 \
+		--from-file=github_app_private_key="$$d/yadgarhq-bot.pem" \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@echo "--- yadgar-dev-ca, iam-keys and estate-runner-github are loaded. ---"
 
 # Argo CD is installed by hand exactly once, because a GitOps controller cannot
 # arrive by GitOps. Everything after this is `git push`.
