@@ -95,12 +95,20 @@ spec:
         #
         # ABSENCE IS NEVER READ AS ZERO. Every rule below is a comparison on a
         # series that must EXIST to match, so a metric no pod publishes fires
-        # nothing. There are deliberately NO `absent()` companions: measured
-        # 2026-09-05, this Prometheus holds exactly ONE `yadgar_*` series name
-        # in the whole store, so an `absent()` rule would fire immediately, for
-        # every pod, forever, and be silenced within a day. The limit that
-        # buys is stated rather than hidden — a `> 0` rule cannot notice its
-        # own reporter going away, and no rule here can, until a series'
+        # nothing. There are deliberately NO `absent()` companions, and the
+        # reason has MOVED since this was first written. It used to be that
+        # only one `yadgar_*` name existed, so any `absent()` would fire at
+        # once and be silenced within a day. Measured 2026-09-05 the store
+        # holds THREE — `yadgar_dial_upstream_never_resolved`,
+        # `yadgar_rotation_watched_files_unreadable` and
+        # `yadgar_tls_certificate_not_after_seconds`, one per rule below — so
+        # an `absent()` on any of those names would now fire never, which is
+        # just as useless. Every real gap here is a missing LABEL VALUE inside
+        # a name that is present: no `upstream="iam"`, no `service="iam-db"`.
+        # `absent()` cannot see that unless the rule NAMES the value it
+        # expects, and nothing has declared which series must exist. The limit
+        # that buys is stated rather than hidden — a `> 0` rule cannot notice
+        # its own reporter going away, and no rule here can, until a series'
         # presence is itself a deployment invariant somebody declared.
         serverFiles:
           alerting_rules.yml:
@@ -119,11 +127,32 @@ spec:
                   # guessed the answer. This is the rule the gauge was shaped
                   # for, and it is the reason the gauge exists.
                   #
-                  # INERT UNTIL AN ADOPTION CAR MOVES THREE PINS. `gateway`,
-                  # `iam` and `task` all pin `yadgar-dial` at tag v0.2.0, and
-                  # the gauge arrived in v0.2.1. No pod publishes it, so this
-                  # rule matches nothing today — confirmed by scraping a pod's
-                  # own /metrics, not inferred from the pins.
+                  # LIVE, AND COVERING THREE HOPS OF FOUR. `gateway`, `iam`
+                  # and `task` now pin `yadgar-dial` at v0.2.1, which is the
+                  # tag the gauge arrived in. Measured against this store on
+                  # 2026-09-05, `yadgar_dial_upstream_never_resolved` carries
+                  # exactly three `upstream` values — `task` from `gateway`,
+                  # `iam-db` from `iam`, `task-db` from `task` — two series
+                  # each, one per replica.
+                  #
+                  # THE HOP IT DOES NOT COVER IS `gateway` -> `iam`, and that
+                  # is the one carrying every login, enrolment and attestation.
+                  # `gateway::upstream::connect_iam` does not go through
+                  # `yadgar_dial` at all: it builds its own `Endpoint` and
+                  # calls `connect_lazy` on it, because ADR-0514 requires the
+                  # URI scheme and the TLS configuration to be decided in ONE
+                  # expression and `yadgar_dial` decides the scheme itself.
+                  # The gauge is written from INSIDE `dial`, so the hop that
+                  # bypasses `dial` publishes nothing. No `upstream="iam"`
+                  # series exists for this rule to match.
+                  #
+                  # SO A DEAD `gateway` -> `iam` STILL LOOKS HEALTHY, which is
+                  # the exact condition ADR-0532 created and this rule was
+                  # written to end. Closing it means routing `connect_iam`
+                  # through `dial` without breaking ADR-0514, or publishing the
+                  # gauge from `gateway` itself. Either is its own change and
+                  # neither is a threshold to tune here. Until one lands, read
+                  # a quiet rule as "three hops are fine", never "all four".
                   #
                   # NO `by (upstream)` AGGREGATION, on purpose. An alerting
                   # rule has no `by` clause; the expression's OUTPUT LABELS are
@@ -161,10 +190,19 @@ spec:
                   # passes through while it rewrites a mount. Roughly ten polls
                   # have to agree before this fires; one mount rewrite cannot.
                   #
-                  # Absence here means a pod with an EMPTY watch set, or one
+                  # Absence here means a pod with an EMPTY watch set, one
                   # that has not finished its first poll — the gauge is
-                  # published only inside the loop. It does not mean zero, and
-                  # `> 0` is the shape that respects the difference.
+                  # published only inside the loop — or a pod with NO WATCHER
+                  # AT ALL, which is the cause this used to leave out.
+                  # Measured 2026-09-05, this series carries `service` values
+                  # `gateway`, `iam` and `task`, and neither `-db`. `iam-db`
+                  # and `task-db` take `yadgar-lifecycle` with
+                  # `default-features = false`, which compiles out the whole
+                  # `rotate` module — and that module owns this gauge AND the
+                  # expiry gauge the rule below wants. So both rules are dark
+                  # on the same two pods for the same one manifest line.
+                  # Absence does not mean zero, and `> 0` is the shape that
+                  # respects the difference.
                   - alert: RotationWatchedFilesUnreadable
                     expr: yadgar_rotation_watched_files_unreadable > 0
                     for: 10m
@@ -207,13 +245,39 @@ spec:
                   # line, and it sits far enough below every `renewBefore` here
                   # that a normal renewal cannot trip it.
                   #
-                  # THE INTERNAL ROOT IS NOT COVERED, and naming that is the
-                  # honest half of drawing this boundary. It is `duration:
-                  # 87600h` with `renewBefore: 8760h`
-                  # (`infra/internal-tls/issuer.yaml`) — the one certificate
-                  # here on a different clock — and no process PRESENTS it, so
-                  # it is never exported by this gauge and nothing alerts on
-                  # its expiry.
+                  # THIS RULE COVERS TWO CERTIFICATES OF NINE, and naming
+                  # the other seven is the honest half of drawing this
+                  # boundary. Measured 2026-09-05 against this store,
+                  # `yadgar_tls_certificate_not_after_seconds` carries
+                  # `service="iam"` and `service="task"` at `kind="serving"`
+                  # and nothing else. The gaps have TWO different causes that
+                  # need two different fixes, so they are not flattened into
+                  # one sentence.
+                  #
+                  # PRESENTED, BUT THE EXPORTER IS COMPILED OUT — `iam-db-tls`
+                  # and `task-db-tls`, two of the four serving leaves under
+                  # `infra/internal-tls/`. Both pods serve TLS
+                  # (`LISTEN_TLS_ENABLED=1`) and both are scraped (`up` is 1),
+                  # so this is a missing SERIES and not a missing target,
+                  # which is the shape no `up`-based rule can see. `iam-db`
+                  # and `task-db` take `yadgar-lifecycle` with
+                  # `default-features = false`, and that crate gates its whole
+                  # `rotate` module — the module that owns this gauge — on the
+                  # feature `default` would have enabled. The fix is one
+                  # manifest line in each of those two repositories.
+                  #
+                  # NOTHING PRESENTS THE OTHER FIVE, so they can never appear
+                  # here at all. The internal root is `duration: 87600h` with
+                  # `renewBefore: 8760h` (`infra/internal-tls/issuer.yaml`),
+                  # the one certificate on a different clock. `gateway-tls` is
+                  # served by the edge Gateway's listener rather than by any
+                  # yadgar process. `gateway-client-tls`, `iam-client-tls` and
+                  # `task-client-tls` are issued and mounted into no pod —
+                  # checked against the live volumes, not inferred.
+                  #
+                  # SO A QUIET RULE HERE MEANS `iam` AND `task` ARE FINE. It
+                  # says nothing about the other seven. It is still worth
+                  # landing, for the reason below.
                   #
                   # It measures what the PROCESS loaded, which is the gap
                   # cert-manager's own metrics cannot see: cert-manager knows

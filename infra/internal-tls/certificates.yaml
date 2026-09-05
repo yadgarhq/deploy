@@ -1,7 +1,9 @@
 # One serving certificate per service, issued by the internal root beside this
-# file. Nothing here turns TLS ON — every chart's `tls.enabled` stays `false`
-# and the cut-over is a separate, revertible lever. This is the material that
-# has to exist before that lever can be pulled at all.
+# file. THE CUT-OVER HAS HAPPENED, so read this as live material rather than as
+# material waiting for a lever. `tls.enabled: true` is set for all four server
+# charts by `yadgarhq/argocd`, and every internal listener runs with
+# `LISTEN_TLS_ENABLED=1` — checked on the pods, not assumed from the manifest.
+# A change here reaches a serving hop.
 #
 # ── THE SAN IS THE SERVICE NAME, AND NOT AN IP ──────────────────────────────
 # A client verifies the certificate against THE HOST IT ASKED FOR, not the
@@ -34,16 +36,27 @@
 # ── RENEWAL, AND THE RESIDUAL THAT COMES WITH IT ────────────────────────────
 # cert-manager renews about two thirds of the way through the duration and
 # rewrites the Secret in place, with no human involved — the reason certificates
-# are its job rather than the bootstrap Job's. But EVERY SERVICE READS ITS
-# CERTIFICATE ONCE AT BOOT, so a rewritten Secret does not reach a running
-# process. With 90 days and a renewal window of thirty days or a little more —
-# the ladder below moves each leaf's window, never its expiry — a pod must
-# therefore restart within 90 days of its certificate being issued, or it serves
-# an expired one.
+# are its job rather than the bootstrap Job's. A process that reads its
+# certificate ONCE AT BOOT never sees that rewrite. With 90 days and a renewal
+# window of thirty days or a little more — the ladder below moves each leaf's
+# window, never its expiry — such a pod must restart within 90 days of its
+# certificate being issued, or it serves an expired one.
 #
-# That is stated rather than solved here, and it blocks nothing while
-# `tls.enabled` is false. Whoever performs the cut-over owns it: either a
-# rollout triggered by the Secret's revision, or an accepted maximum pod age.
+# THAT RESIDUAL IS CLOSED FOR THREE PROCESSES AND OPEN FOR TWO, and TLS is on
+# now, so it no longer blocks nothing. `gateway`, `iam` and `task` carry the
+# rotation watcher of ADR-0523 — visible as `TLS_ROTATION_POLL_SECS` on their
+# pods. It notices the rewrite, waits out a splay, drains and exits 0, and the
+# pod comes back on the new material. `iam-db` and `task-db` take
+# `yadgar-lifecycle` with `default-features = false`, which compiles that
+# watcher out entirely, so `iam-db-tls` and `task-db-tls` still wait for a
+# restart to arrive from somewhere else.
+#
+# THE SAME MANIFEST LINE ALSO COSTS THOSE TWO THE EXPIRY GAUGE. `rotate` is the
+# feature that owns `yadgar_tls_certificate_not_after_seconds`, so
+# `TlsCertificateExpiringSoon` in `infra/prometheus.yaml` cannot warn about
+# `iam-db-tls` or `task-db-tls` either — the leaves with no watcher are exactly
+# the leaves with no alert. Both halves are one fix in each of those two
+# repositories.
 #
 # ── THE RENEWAL INSTANT IS STAGGERED, ONE SERVICE PER INSTANT ───────────────
 # EVERY LEAF UNDER THIS DIRECTORY CARRIES A DISTINCT `renewBefore`. The values
