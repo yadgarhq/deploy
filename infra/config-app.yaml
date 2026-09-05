@@ -1,0 +1,65 @@
+# The installation's configuration: the ConfigMaps every service reads its knobs
+# out of (ADR-0569, ADR-0570).
+#
+# A FOREIGN `repoURL`, and the only Application in this directory pointing at a
+# yadgarhq repository that is not this one. That is deliberate and it is what
+# ADR-0569 asks for: the settings live in ONE repository an installation clones
+# and edits, rather than scattered through the deployment repository mixed in
+# with infrastructure. Adopting this estate means forking `yadgarhq/config` and
+# changing the line below, and nothing else.
+#
+# HERE RATHER THAN IN `yadgarhq/argocd`. That repository holds Argo's own values
+# and the module generator; `root.yaml`'s include glob is
+# `{applications,applicationsets}/*.yaml` and reaches nothing else. Configuration
+# is not Argo, so it belongs in the infra app-of-apps with everything else that
+# is not.
+#
+# NOT THROUGH THE MODULE ApplicationSet, even though `yadgarhq/config` has a
+# `chart/` directory and would otherwise match. That generator also requires the
+# `yadgar-deployable` topic, which this repository deliberately does not carry:
+# every Application it generates is at sync wave 10, which is AFTER the modules
+# that mount these ConfigMaps. Adding the topic would mint a second Application
+# for the same chart at the wrong wave, and two Applications owning one object is
+# a fight neither wins. `yadgarhq/config`'s README records the trap where the
+# next person will be standing when they ask why it is not in the generator.
+#
+# WAVE -12, THE SAME FAMILY AS THE CREDENTIAL BOOTSTRAP, and for the reason that
+# file states about itself: a thing that must exist before the things that
+# reference it. A ConfigMap volume is `optional: false` by default, so a pod
+# whose ConfigMap has not synced yet does not fail — it sits in
+# `ContainerCreating` forever, exactly as a pod with a missing Secret does. That
+# is the intended failure when a ConfigMap is genuinely absent and it is a stuck
+# estate when it is merely late, so "before" here is ordering rather than
+# preference. Modules are at wave 10.
+#
+# NOTHING MOUNTS THESE YET. The five services read the rotation schedule from
+# environment variables set by their own charts; moving them is a second step,
+# blocked on a `yadgar-lifecycle` tag that only a merge can cut. See
+# MIGRATION_NOTES.md. Until then this Application renders seven ConfigMaps that
+# nothing reads, which is a deliberate ordering choice: the configuration must be
+# in the cluster BEFORE the first service that refuses to boot without it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: config
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-12"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/config
+    # HEAD, like every other yadgarhq source here: development follows `main`
+    # (D55). A configuration change is a merged pull request and the next
+    # reconciliation, which is the same review gate every other change passes.
+    targetRevision: main
+    path: chart
+  destination:
+    server: https://kubernetes.default.svc
+    # THE SERVICES' OWN NAMESPACE, and it has to be. A pod can only mount a
+    # ConfigMap from the namespace it runs in, so configuration for `yadgar`
+    # cannot live anywhere else.
+    namespace: yadgar
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
