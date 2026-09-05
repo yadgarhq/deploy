@@ -190,14 +190,22 @@ spec:
                   # FOURTEEN DAYS, ARITHMETIC RATHER THAN TASTE. All eight
                   # LEAF certificates this repository declares — four serving
                   # and three client under `infra/internal-tls/`, plus the edge
-                  # leaf in `infra/tls/` — set `duration: 2160h` (90d) with
-                  # `renewBefore: 720h` (30d), so cert-manager rewrites the
-                  # Secret with 30 days left. Firing at 14 means sixteen days
-                  # of renewal-or-reload having failed before anyone is told,
-                  # and fourteen days of runway after. It is a BACKSTOP behind
-                  # cert-manager rather than the first line, and it sits far
-                  # enough below `renewBefore` that a normal renewal cannot
-                  # trip it.
+                  # leaf in `infra/tls/` — set `duration: 2160h` (90d). Their
+                  # `renewBefore` values are NO LONGER ALL 720h: the seven
+                  # under `infra/internal-tls/` climb a 6-hour ladder from 726h
+                  # to 762h so that no two services renew in the same window,
+                  # which is argued at length in `certificates.yaml`. The edge
+                  # leaf keeps 720h.
+                  #
+                  # THE THRESHOLD IS SIZED AGAINST THE SMALLEST OF THEM, and
+                  # the ladder only ever moves a renewal EARLIER, so the floor
+                  # is the edge leaf's 720h: cert-manager rewrites every Secret
+                  # here with AT LEAST 30 days left. Firing at 14 therefore
+                  # still means sixteen days of renewal-or-reload having failed
+                  # before anyone is told, and fourteen days of runway after.
+                  # It is a BACKSTOP behind cert-manager rather than the first
+                  # line, and it sits far enough below every `renewBefore` here
+                  # that a normal renewal cannot trip it.
                   #
                   # THE INTERNAL ROOT IS NOT COVERED, and naming that is the
                   # honest half of drawing this boundary. It is `duration:
