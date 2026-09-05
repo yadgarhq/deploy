@@ -4,14 +4,29 @@ Commands for a human to run. Nothing here is applied automatically: each step
 either handles a private key or mutates cluster state, and both are decisions
 rather than side effects.
 
-## A first sync needs exactly one step from this document
+## A first sync needs no step from this document, because `make bootstrap` takes it
+
+**`make bootstrap` now depends on `make secrets`, which loads both hand-held
+Secrets from 1Password before Argo installs anything** — `iam-keys` into
+`yadgar` and `yadgar-dev-ca` into `cert-manager`. It is idempotent, so running
+it against a cluster that already holds them changes nothing. The sections below
+remain the authority on what those Secrets ARE and where they come from; they
+are no longer a checklist to remember on a recreate.
+
+**Why that changed.** On 2026-09-05 a recreate came back with neither Secret and
+the two failures did not look alike. The CA announces itself — the preflight Job
+refuses, names the Secret and prints the command. `iam-keys` does not: both
+`iam` pods sit in `ContainerCreating` with the reason only in `kubectl describe
+pod`, and the `iam` Application reports **Healthy** throughout. A step that is
+invisible when skipped does not belong in a document.
 
 **Mint `iam-keys` — "The identity encryption keys" below — before the first
-sync.** Everything else a first sync needs now generates itself (ADR-0517): the
-cache password and the broker account come from `infra/bootstrap/`, and every
-internal certificate from `infra/internal-tls/`. Without `iam-keys` a fresh
-cluster reaches every pod Ready **except `iam`**, which stays in
-`ContainerCreating` naming the file it cannot find.
+sync,** if you are not using `make bootstrap`. Everything else a first sync needs
+now generates itself (ADR-0517): the cache password and the broker account come
+from `infra/bootstrap/`, and every internal certificate from
+`infra/internal-tls/`. Without `iam-keys` a fresh cluster reaches every pod Ready
+**except `iam`**, which stays in `ContainerCreating` naming the file it cannot
+find.
 
 **That one step is a decision, not a gap.** Those keys are data-bearing rather
 than machine-only: the deployment could mint them, and if it did, a cluster
@@ -233,8 +248,9 @@ cd - && rmdir "$OLDPWD" 2>/dev/null || true
 
 ### To restore them into a rebuilt cluster
 
-The same load, from 1Password rather than from `openssl`. Do it **before** the
-first sync of the rebuilt cluster:
+**`make secrets` does this, and `make bootstrap` depends on it.** What follows is
+the same commands by hand, kept because they are the authority on which 1Password
+items are read. Do it **before** the first sync of the rebuilt cluster:
 
 ```bash
 op document get "yadgar iam — encryption key"  --out-file encryption.key
@@ -410,7 +426,10 @@ in step 4 so the trust statement is declarative, and that is fine.
 
 ### 3. Hand the key to cert-manager
 
-Wait until Argo has synced `cert-manager` and the namespace exists.
+**`make secrets` does this too, and it does not wait**: it creates the
+`cert-manager` namespace itself, so the Secret is in place before Argo syncs
+rather than after. Run this by hand only when loading the CA on its own, into a
+cluster that is already up.
 
 Straight from 1Password, so this works identically after a cluster rebuild with
 no local files in play:

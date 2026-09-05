@@ -21,11 +21,58 @@ ARGOCD_CHART_VERSION := 8.6.1
 # Only for the one-time handover apply. Everything after arrives through git.
 ARGOCD_REPO ?= ../argocd
 
-.PHONY: bootstrap status ui password sync
+.PHONY: bootstrap secrets status ui password sync
+
+# THE TWO SECRETS GITOPS CANNOT CARRY, loaded before anything syncs.
+#
+# Both are DATA-BEARING and neither is auto-generated: `yadgar-dev-ca` is the
+# development root (ADR-0518), and `iam-keys` is the pair `iam` encrypts identity
+# with — lose it and every stored name is unreadable (ledger 452). They cannot
+# arrive through git because this repository is PUBLIC, and they cannot be
+# generated on demand because a fresh key decrypts nothing that came before.
+#
+# SO THEY ARE THE ONE THING A CLUSTER RECREATE USED TO NEED A HUMAN TO REMEMBER,
+# and forgetting was invisible in different ways for each. The CA announces
+# itself: `infra/tls/preflight.yaml` refuses, names the Secret and prints this
+# command. `iam-keys` does not — the pods sit in `ContainerCreating` with the
+# reason only in `kubectl describe`, and Argo reports the Application Healthy
+# throughout. Both were missing after the 2026-09-05 recreate.
+#
+# IT RUNS BEFORE `bootstrap` INSTALLS ANYTHING, as a prerequisite rather than a
+# step, so a missing 1Password item fails while the cluster is still empty
+# rather than half-built.
+#
+# Idempotent: every write is `--dry-run=client | kubectl apply`, so re-running on
+# a cluster that already holds them is a no-op rather than an error. The two
+# namespaces are created here because the Secrets need somewhere to live before
+# the Applications that own those namespaces have synced; Argo adopts them.
+secrets: ## Load yadgar-dev-ca and iam-keys from 1Password. Idempotent.
+	@command -v op >/dev/null || { 		echo "The 1Password CLI (op) is not on PATH."; 		echo "Both secrets are data-bearing and live only there — see"; 		echo "MIGRATION_NOTES.md, 'The identity encryption keys' and"; 		echo "'The development TLS edge'."; 		exit 1; }
+	@op account list >/dev/null 2>&1 || { 		echo "The 1Password CLI is not signed in. Run 'op signin' first."; 		exit 1; }
+	kubectl create namespace cert-manager \
+		--dry-run=client -o yaml | kubectl apply -f -
+	kubectl create namespace yadgar \
+		--dry-run=client -o yaml | kubectl apply -f -
+	kubectl create secret tls yadgar-dev-ca \
+		--namespace cert-manager \
+		--cert <(op read "op://Private/yadgar-dev-ca/certificate") \
+		--key  <(op read "op://Private/yadgar-dev-ca/private key") \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@set -euo pipefail; \
+	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.key 2>/dev/null || true; rmdir "$$d"' EXIT; \
+	 ( umask 077; \
+	   op document get "yadgar iam — encryption key"  --out-file "$$d/encryption.key"; \
+	   op document get "yadgar iam — blind index key" --out-file "$$d/blind-index.key" ); \
+	 kubectl create secret generic iam-keys \
+		--namespace yadgar \
+		--from-file=encryption.key="$$d/encryption.key" \
+		--from-file=blind-index.key="$$d/blind-index.key" \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@echo "--- yadgar-dev-ca and iam-keys are loaded. ---"
 
 # Argo CD is installed by hand exactly once, because a GitOps controller cannot
 # arrive by GitOps. Everything after this is `git push`.
-bootstrap: ## Install Argo CD into the running cluster, then hand control to git.
+bootstrap: secrets ## Install Argo CD into the running cluster, then hand control to git.
 	@test -n "$$GITHUB_TOKEN" || { \
 		echo "GITHUB_TOKEN is unset."; \
 		echo "The D54 ApplicationSet enumerates the organisation through the"; \
