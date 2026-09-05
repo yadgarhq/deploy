@@ -1,0 +1,268 @@
+# The `estate-front` runner scale set — the runner `yadgarhq/estate`'s contract
+# suite runs on.
+#
+# THE SCALE SET'S NAME IS THE `runs-on:` LABEL. `estate`'s `smoke.yaml` says
+# `runs-on: estate-front`. Renaming `runnerScaleSetName` below leaves that
+# workflow queueing for ever against a label nothing offers, with no error
+# anywhere.
+#
+# THE VALUES USED TO LIVE IN `yadgarhq/estate` (`runners/estate-front/`) and do
+# not any more. One spec in two repositories drifts, and the copy that drifts is
+# the one not being applied — ADR-0480's own rationale. The applied copy is now
+# the only copy; estate's README and MIGRATION_NOTES point here.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# HOW A FORK IS KEPT OFF THIS RUNNER — enforced, not intended
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `yadgarhq/estate` is a PUBLIC repository (verified via the GitHub API,
+# 2026-09-05), so this matters more than it would on a private one: a fork pull
+# request runs attacker-authored workflow code, and this runner sits inside the
+# cluster.
+#
+# 1. **The registration is repository-scoped.** `githubConfigUrl` names the
+#    repository, so the runners register as repository runners of
+#    `yadgarhq/estate`. No other repository's workflow can target them, and that
+#    is enforced by GitHub rather than by a setting somebody has to keep right.
+#
+# 2. **No workflow that a fork can trigger names this label.** `smoke.yaml`'s
+#    `on:` block is `repository_dispatch` and `workflow_dispatch` only. Neither
+#    is reachable from a fork: both require a token with write access to the
+#    repository. `ci.yaml` is the only workflow that runs on `pull_request`, and
+#    it calls the shared workflow in `yadgarhq/actions`, which runs on
+#    GitHub-hosted runners.
+#
+# 3. **The `estate` environment gates the credential**, and a fork pull request
+#    cannot read environment secrets at all.
+#
+# THE PLAN'S FOURTH CONTROL DOES NOT EXIST AND CANNOT BE CREATED. `estate`'s
+# MIGRATION_NOTES and the design in `yadgarhq/docs` both said to create an
+# organisation runner group named `estate`, restricted to this repository, and
+# to name it here. Measured 2026-09-05: `yadgarhq` is on the **free** plan and
+# `GET /orgs/yadgarhq/actions/runner-groups` returns exactly one group,
+# `Default` (id 1, `visibility: all`) — custom runner groups are a Team or
+# Enterprise feature. So `runnerGroup` is deliberately ABSENT below rather than
+# set to a name nothing would resolve. Control 1 is strictly stronger anyway:
+# `Default` is visible to every repository in the organisation, and a
+# repository-scoped registration is visible to one.
+#
+# The organisation setting the same documents named — "fork pull-request
+# workflows must not run on self-hosted runners" — governs PRIVATE repositories
+# only. The public-repository equivalent is the fork pull-request approval
+# policy, and it is ALREADY at its strictest here. Measured 2026-09-05,
+# `yadgarhq/estate` reads `all_external_contributors`, as do all fifteen public
+# repositories in the organisation:
+#
+#   gh api /repos/yadgarhq/estate/actions/permissions/fork-pr-contributor-approval
+#
+# There is nothing for an operator to set. The value is PER-REPOSITORY and not
+# inherited: the organisation default still reads `first_time_contributors`, and
+# what keeps a new repository correct is `apply.sh` in `yadgarhq/docs`, which
+# sets it at creation. A repository created by hand, outside that script, starts
+# at the organisation default. This is defence in depth behind control 2, not
+# the thing standing between a fork and this cluster.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE CREDENTIAL
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `githubConfigSecret` is a NAME. The Secret is created out of band by an
+# operator and is deliberately not in git — see "The estate-front runner" in
+# MIGRATION_NOTES.md for the exact command.
+#
+# A MISSING OR WRONG SECRET IS A QUIET FAILURE, NOT A LOUD ONE, and an earlier
+# revision of this comment claimed the opposite. It said the Application goes
+# Degraded. It does not. Argo CD assesses a custom resource it has no health
+# check for as HEALTHY, and it has none for `actions.github.com` kinds: Argo CD
+# v3.1.8 ships no `resource_customizations/actions.github.com/` directory, and
+# this cluster's `argocd-cm` declares no `resource.customizations.health.*` key
+# at all — both measured 2026-09-05. So this Application reports Synced and
+# Healthy whether or not the Secret exists.
+#
+# WHERE THE EVIDENCE ACTUALLY IS: `arc-systems`, which is the controller's
+# namespace and not this Application's.
+#
+#   kubectl -n arc-systems logs deploy/arc-gha-rs-controller
+#   kubectl -n arc-systems get pods            # an AutoscalingListener for this
+#                                              # scale set, or none
+#
+# The exact shape of that failure is deliberately NOT asserted here, because
+# seeing it means installing this and nobody has. A `resource.customizations.health.actions.github.com_AutoscalingRunnerSet`
+# entry would make the Degraded claim true. That key lives in `argocd-cm`, which
+# is `yadgarhq/argocd`'s object (`install/values.yaml`, `configs.cm`) rather
+# than this repository's, so it is not written here.
+#
+# THE CREDENTIAL IS THE `yadgarhq-bot` App (app_id 4814165) rather than a PAT: a
+# PAT carries a person's whole access and outlives them. Measured 2026-09-05 by
+# `gh api /orgs/yadgarhq/installations` (installation 158692002), the App holds
+# `actions: write`, `administration: write`, `contents: write`, `issues: write`,
+# `metadata: read`, `organization_self_hosted_runners: write`,
+# `pull_requests: write` and `workflows: write`.
+#
+# THE PERMISSION THIS SCALE SET NEEDS IS `administration: write`, NOT
+# `organization_self_hosted_runners: write`, and an earlier revision named the
+# wrong one. `organization_self_hosted_runners` is for registering a runner at
+# the ORGANISATION. `githubConfigUrl` above names a repository, so the
+# registration is a repository one, and GitHub asks for repository
+# `administration: write` for that. It is why that permission was granted.
+#
+# THE COST OF THAT, STATED RATHER THAN HIDDEN. The installation is
+# organisation-wide (`repository_selection: all` on the same response), so
+# `administration: write` reaches EVERY repository in `yadgarhq` — its settings,
+# its branch protection, its collaborators, its deletion — not only `estate`.
+# One repository-scoped runner therefore bought an organisation-wide
+# administrative permission. ADR-0563 is what makes that tolerable rather than
+# fine: no job on this runner ever receives the key, and the listener that holds
+# it runs in `arc-systems` and executes no workflow code. That ADR's revisit
+# trigger is the App being SPLIT so runner registration stops travelling with
+# `contents` and `workflows` write; the App became broader instead, so the
+# decision stands as written.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: estate-front-runner
+  namespace: argocd
+  annotations:
+    # After infra/arc.yaml (-10), whose chart carries the
+    # `autoscalingrunnersets.actions.github.com` CRD this Application's only
+    # object is an instance of — a custom resource applied before its definition
+    # is a hard sync failure, not something Argo retries. After
+    # infra/estate-front-app.yaml (-6), which creates the namespace and the
+    # address the runner dials.
+    argocd.argoproj.io/sync-wave: "-5"
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set
+    targetRevision: 0.14.2
+    helm:
+      values: |
+        githubConfigUrl: https://github.com/yadgarhq/estate
+        githubConfigSecret: estate-runner-github
+        runnerScaleSetName: estate-front
+
+        # WITHOUT THIS BLOCK THE CHART DOES NOT RENDER UNDER ARGO CD AT ALL, and
+        # the failure names a label rather than the cause. `manager_role_binding.yaml`
+        # calls Helm's `lookup` to find the controller's Deployment and read the
+        # ServiceAccount off its labels. `lookup` reads the live cluster, and
+        # Argo renders with `helm template`, where it returns empty — the same
+        # template-only limitation D54 records for password generation. The
+        # chart then aborts with "No gha-rs-controller deployment found using
+        # label (app.kubernetes.io/part-of=gha-rs-controller)". Reproduced here
+        # on 2026-09-05 by rendering this exact values block without it.
+        #
+        # Both values are read off the rendered controller chart rather than
+        # guessed: infra/arc.yaml is an Application named `arc`, Argo uses the
+        # Application name as the Helm release name, and the chart names its
+        # ServiceAccount `<release>-gha-rs-controller` in the destination
+        # namespace. RENAMING THAT APPLICATION BREAKS THIS, silently until the
+        # listener's RoleBinding is found to bind nobody.
+        controllerServiceAccount:
+          namespace: arc-systems
+          name: arc-gha-rs-controller
+
+        # Idle to nothing, and a low ceiling. `smoke.yaml` serialises itself
+        # with a `concurrency` group, so one runner serves a queue of rolls; the
+        # second is headroom for a `workflow_dispatch` run alongside it. A
+        # scale set with no ceiling on a three-node kind cluster competes with
+        # the ~19 database instances D55 sizes this machine around.
+        minRunners: 0
+        maxRunners: 2
+
+        template:
+          spec:
+            # THE EDGE, BY THE NAME A REAL CLIENT USES. This is the whole of the
+            # in-cluster DNS answer, and it is deliberately not a CoreDNS
+            # rewrite — see "Resolving gateway.yadgar.internal" in
+            # MIGRATION_NOTES.md for why that would be the nix repo's object to
+            # own under ADR-0480, and why this is not.
+            #
+            # 10.96.0.100 is the pinned ClusterIP of `yadgar-edge`, declared in
+            # infra/estate-front/edge-service.yaml, which explains the pin.
+            # Only RESOLUTION is redirected: the suite still dials
+            # `gateway.yadgar.internal`, still sends it as SNI, and still
+            # validates the same leaf against the same name-constrained root.
+            #
+            # `hostAliases` SURVIVES INTO THE POD, and that was checked rather
+            # than assumed. The chart writes `template` into an
+            # `AutoscalingRunnerSet`, whose CRD enumerates the pod-spec fields
+            # it keeps — a field the schema omits is pruned by the API server
+            # silently, and the runner would then come up with working DNS for
+            # everything except the one name the suite needs. `hostAliases` is
+            # in the schema at chart 0.14.2 (read out of `helm template
+            # --include-crds` of the controller chart, 2026-09-05).
+            hostAliases:
+              - ip: 10.96.0.100
+                hostnames:
+                  - gateway.yadgar.internal
+
+            containers:
+              - name: runner
+                # ─────────────────────────────────────────────────────────────
+                # THIS IMAGE DOES NOT EXIST YET. BUILD IT FIRST.
+                # ─────────────────────────────────────────────────────────────
+                #
+                # MIGRATION_NOTES.md, "The estate-front runner", carries the
+                # Containerfile, the login, the push and the step that makes the
+                # pushed package PUBLIC. Until it is pushed a queued job leaves a
+                # pod in ImagePullBackOff naming this reference; nothing is
+                # created until a job is queued, because `minRunners: 0`.
+                #
+                # PUSHING IS NOT ENOUGH ON ITS OWN. A package created by a first
+                # push to GHCR is PRIVATE, and this pod carries no pull
+                # credential — there is no `imagePullSecrets` in the template
+                # below, deliberately. A pushed-but-private package therefore
+                # fails as ImagePullBackOff with a 401 from the registry, which
+                # reads like a typo in the reference rather than a visibility
+                # setting. `imagePullSecrets` IS in the `AutoscalingRunnerSet`
+                # CRD's pod-spec schema, so that route is buildable — it was
+                # rendered and rejected, because the Secret it needs holds a
+                # classic PAT with `read:packages`, which is the credential shape
+                # the section above refuses. All twelve container packages this
+                # organisation already publishes are public; this one matches
+                # them.
+                #
+                # A PURPOSE-BUILT IMAGE, NOT THE STOCK RUNNER PLUS A `rustup`
+                # STEP, and the choice is argued rather than defaulted:
+                #
+                # - The stock `ghcr.io/actions/actions-runner` image carries no
+                #   Rust toolchain, and `smoke.yaml`'s `dtolnay/rust-toolchain`
+                #   step drives `rustup`. Without it the job fails naming a
+                #   missing binary rather than a missing image. (Asserted by
+                #   estate's own runner values when this design was written; not
+                #   independently re-verified here, because verifying it means
+                #   running the image.)
+                # - The alternative is fetching `rustup` at job time, which is
+                #   an unpinned network install executed inside the one pod that
+                #   holds the `estate` environment's secrets and line of sight
+                #   to the edge. D61 pins by digest everywhere else in this
+                #   estate; `curl | sh` in the most sensitive pod is the exact
+                #   opposite.
+                # - The toolchain must match `estate`'s `rust-toolchain.toml`.
+                #   An image can guarantee that before a job starts. A job step
+                #   can only discover it.
+                #
+                # THE COST, STATED. GitHub deprecates old runner binaries, and a
+                # runner too far behind is refused at registration. This image
+                # therefore has to be rebuilt when the upstream runner is
+                # bumped — a standing obligation, not a one-off. Pin it by
+                # digest here when it exists.
+                image: ghcr.io/yadgarhq/estate-runner:0.1.0
+                command: ["/home/runner/run.sh"]
+                # Development sizing (D55). `cargo build` of the suite is the
+                # peak; the limit is memory only, because a CPU limit would make
+                # a compile slow rather than fail and this machine has cores to
+                # spare.
+                resources:
+                  requests:
+                    cpu: 500m
+                    memory: 1Gi
+                  limits:
+                    memory: 2Gi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: estate-front
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]

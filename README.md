@@ -126,16 +126,19 @@ need on the rare occasion it arises.
 
 ## What is here
 
-| Path                                            |                                                                                                  |
-| ----------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `infra/apps.yaml`                               | app-of-apps entry point for everything that is not Argo itself                                   |
-| `infra/mariadb-operator-crds.yaml`              | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
-| `infra/mariadb-operator.yaml`                   | the operator itself — reconciles `MariaDB` resources; holds no instances                         |
-| `infra/databases-app.yaml` + `infra/databases/` | the per-module database instances, one per module (D58)                                          |
-| `infra/valkey-app.yaml` + `infra/valkey/`       | one shared cache (D21), hand-written rather than a chart                                         |
-| `infra/nats.yaml`                               | JetStream, asynchronous work only (D22)                                                          |
-| `infra/cert-manager.yaml`                       | certificate issuance and renewal for the TLS edge (D71)                                          |
-| `infra/tls-app.yaml` + `infra/tls/`             | the ClusterIssuer, the gateway certificate and the Gateway itself (D71)                          |
+| Path                                                  |                                                                                                  |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `infra/apps.yaml`                                     | app-of-apps entry point for everything that is not Argo itself                                   |
+| `infra/mariadb-operator-crds.yaml`                    | the operator's CRDs, a separate chart at an earlier wave — without them the operator crash-loops |
+| `infra/mariadb-operator.yaml`                         | the operator itself — reconciles `MariaDB` resources; holds no instances                         |
+| `infra/databases-app.yaml` + `infra/databases/`       | the per-module database instances, one per module (D58)                                          |
+| `infra/valkey-app.yaml` + `infra/valkey/`             | one shared cache (D21), hand-written rather than a chart                                         |
+| `infra/nats.yaml`                                     | JetStream, asynchronous work only (D22)                                                          |
+| `infra/cert-manager.yaml`                             | certificate issuance and renewal for the TLS edge (D71)                                          |
+| `infra/tls-app.yaml` + `infra/tls/`                   | the ClusterIssuer, the gateway certificate and the Gateway itself (D71)                          |
+| `infra/arc.yaml`                                      | actions-runner-controller — runs no workflow itself; see its cluster-wide RBAC below             |
+| `infra/estate-front-app.yaml` + `infra/estate-front/` | the runner's NetworkPolicy and the stable edge address it dials                                  |
+| `infra/estate-front-runner.yaml`                      | the `estate-front` runner scale set `yadgarhq/estate`'s contract suite runs on                   |
 
 ## Reaching the cluster from the host — the rootless constraint
 
@@ -209,3 +212,15 @@ resource would be accepted and fail later in the operator's logs instead of
 being rejected at apply time. With ~19 such resources central to D58, and D27
 making one deployment one organisation, validation is worth more than the
 narrower role. Revisit if the deployment ever hosts anything else.
+
+`actions-runner-controller` also runs with cluster-wide RBAC, and one verb in it
+is worth naming: `rbac.authorization.k8s.io/roles` with `patch`, cluster-wide,
+alongside `pods` and `serviceaccounts` at `list,watch`. It is how the controller
+maintains the per-scale-set Role that lets its listener create runner pods. The
+API server's escalation check stops a patch from granting permissions the
+patcher does not already hold, so this is not a free path to cluster-admin — but
+it is a cluster-scoped write on RBAC objects held by a controller whose purpose
+is to run code GitHub hands it, and the chart offers no single-namespace mode
+for it. Read off `helm template` at chart 0.14.2 on 2026-09-05; the full list is
+on `infra/arc.yaml`. The confinement in `infra/estate-front/` is about the pods
+that execute workflow code, and it says nothing about this.

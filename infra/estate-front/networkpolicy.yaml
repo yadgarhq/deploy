@@ -1,0 +1,145 @@
+# The confinement C-18 tests.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# READ THIS FIRST: NOTHING IN THIS FILE IS ENFORCED ON THIS CLUSTER TODAY
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The CNI is **kindnet**, which does not implement NetworkPolicy. Measured, not
+# assumed: `kube-system` runs a `kindnet` DaemonSet and no Calico, Cilium or
+# Weave (2026-09-05). The API server accepts this object, `kubectl get
+# networkpolicy` lists it, `kubectl describe` prints the rules, and **nothing
+# evaluates any of it**. A runner pod can open a connection to any service in
+# the cluster today and will still be able to after this is applied.
+#
+# So the front-door discipline of `yadgarhq/estate`'s suite is discipline, not a
+# property of the network. C-18 is the row that says so out loud, and it is RED
+# by design until the CNI changes. The change is kind with `disableDefaultCNI`
+# plus Cilium or Calico, and it belongs to the **nix repo** (ADR-0480 — nix owns
+# the cluster, this repository owns what runs inside it). It is filed as a dated
+# task: **`yadgarhq/docs` ledger 614, due 2026-10-03**. C-18's own failure output
+# prints both, so a red run always names the thing that clears it.
+#
+# This file ships anyway because it is the SPECIFICATION that row asserts. When
+# the CNI changes it becomes true and C-18 goes green without being edited.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT THIS POLICY SELECTS, AND WHAT IT DOES NOT
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `podSelector: {}` is every pod in `estate-front`, which is the runner pods and
+# nothing else. ARC's LISTENER — the pod that holds the GitHub App credential —
+# runs in the CONTROLLER's namespace, not here: verified in ARC's own source,
+# where `autoscalingrunnerset_controller.go` creates the `AutoscalingListener`
+# with `Namespace: r.ControllerNamespace`. So the listener is `arc-systems`'
+# business and is unconfined; see the comment in infra/arc.yaml. What this file
+# confines is the pods that execute workflow code, which is the surface the
+# suite's own bugs and its dependencies live on.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: estate-front-egress
+  namespace: estate-front
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  # NO INGRESS RULES AT ALL, which denies all ingress. A CI runner is dialled by
+  # nothing; it dials out. An empty `ingress:` list would say the same thing
+  # less clearly, so the absence is deliberate and this comment is the record.
+  egress:
+    # (a) Name resolution. Without this the runner resolves neither github.com
+    # nor the `*.svc.cluster.local` names C-18 must prove exist, and the suite
+    # fails at DNS rather than at a contract.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # (b) THE EDGE, AND ONLY THE EDGE. Selected by the Envoy Gateway labels
+    # rather than by Service name: the live Service is
+    # `envoy-yadgar-edge-a2648de2`, whose suffix is a hash that changes when the
+    # Gateway is recreated. A policy naming the Service by name would silently
+    # stop matching, and the suite would then be unable to reach the edge for a
+    # reason nothing explains.
+    #
+    # 10443 IS THE PORT THAT ACTUALLY MATTERS. Measured 2026-09-05: the edge
+    # Service is `port 443 → targetPort 10443 → nodePort 30443`, so the Envoy
+    # pods LISTEN ON 10443. Egress is evaluated after DNAT on both Cilium and
+    # Calico — by the time the policy sees the packet the Service port has
+    # already been translated to the pod's `targetPort` — so a rule naming only
+    # 443 would refuse every connection to the edge. Rule (d) below excepts the
+    # Service CIDR, so there would be no second path and the runner could not
+    # reach the edge at all. THIS FILE IS DORMANT UNTIL THE CNI CHANGES, so that
+    # mistake would not surface until the day it starts being enforced, which is
+    # why the reason is written down rather than left to be rediscovered.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: envoy-gateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: envoy
+              gateway.envoyproxy.io/owning-gateway-name: edge
+              gateway.envoyproxy.io/owning-gateway-namespace: yadgar
+      ports:
+        - protocol: TCP
+          port: 10443
+
+    # (c) THE SAME EDGE, ADDRESSED AS THE Service, for a CNI that evaluates
+    # egress BEFORE DNAT. There is exactly one such address and it is pinned:
+    # `yadgar-edge` in edge-service.yaml holds 10.96.0.100, and the runner's
+    # `hostAliases` entry maps `gateway.yadgar.internal` to it. Rule (d) excepts
+    # the whole Service CIDR, so without this rule a pre-DNAT CNI would drop the
+    # connection.
+    #
+    # ON CILIUM AND CALICO THIS RULE NEVER MATCHES ANYTHING, and that is
+    # expected rather than a sign it is wrong — those two see the translated
+    # pod address and take rule (b). Allowing one address that is either the
+    # edge or nothing costs nothing.
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.100/32
+      ports:
+        - protocol: TCP
+          port: 443
+
+    # (d) GitHub, expressed as "the internet, but nothing in this cluster".
+    #
+    # NetworkPolicy has no FQDN rule, so "GitHub" is not directly sayable. The
+    # portable form is an `ipBlock` of everything with the cluster's own ranges
+    # excepted — which is coarser than GitHub and says so: a compromised runner
+    # could reach any host on :443. Narrowing it needs an FQDN-aware policy
+    # (Cilium), which is a decision that belongs with the CNI choice in ledger
+    # 614 rather than a thing to pretend is already made.
+    #
+    # THE THREE EXCEPTED RANGES WERE MEASURED (2026-09-05), not assumed. Pod
+    # 10.244.0.0/16 (`.spec.podCIDR` is a /24 per node: .0, .1 and .2),
+    # Service 10.96.0.0/16 (`--service-cluster-ip-range` on the live
+    # `kube-apiserver`), node 10.89.4.0/24 (the container network the three kind
+    # nodes sit on: 10.89.4.8, .9 and .10). A wrong or stale range here is a
+    # hole, so re-measure when the cluster is rebuilt.
+    #
+    # THE NODE RANGE IS EXCEPTED ON PURPOSE, and it is what closes the back
+    # door: the edge is also a NodePort on 30443, and a runner able to reach a
+    # node address could dial the estate without going near this policy's edge
+    # rules. It could not skip the certificate — the edge serves one — but it
+    # could skip everything this policy is for.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.244.0.0/16
+              - 10.96.0.0/16
+              - 10.89.4.0/24
+      ports:
+        - protocol: TCP
+          port: 443

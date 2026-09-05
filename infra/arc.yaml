@@ -1,0 +1,104 @@
+# actions-runner-controller — the controller half, and only the controller half.
+#
+# It runs no workflow itself. It watches `AutoscalingRunnerSet` resources and,
+# for each one, runs a LISTENER pod that holds the GitHub credential and asks
+# the Actions service for queued jobs. The runner pods it creates land in the
+# scale set's own namespace; see infra/estate-front-runner.yaml.
+#
+# WHY IT EXISTS. `yadgarhq/estate`'s contract suite must reach the edge from
+# inside the cluster, as a real client does (ADR-0562). A GitHub-hosted runner
+# cannot: `gateway.yadgar.internal` resolves nowhere outside this machine. So the
+# suite needs a runner in the cluster, and ARC is the mechanism GitHub itself
+# ships for that.
+#
+# THE LISTENER RUNS HERE, NOT IN THE RUNNER'S NAMESPACE, and that is a fact
+# about the confinement story rather than a detail. Verified against ARC's own
+# source (`controllers/actions.github.com/autoscalingrunnerset_controller.go`
+# creates the `AutoscalingListener` with `Namespace: r.ControllerNamespace`), so
+# the pod holding the App private key sits in `arc-systems` and is NOT selected
+# by the NetworkPolicy in infra/estate-front/. That policy confines the pods
+# that execute workflow code. The listener executes none, and it must reach both
+# GitHub and the API server, so confining it would be a different policy with a
+# different shape — it is deliberately not attempted here.
+#
+# THE CONTROLLER'S RBAC IS BROADER THAN "A CONFINED RUNNER" SOUNDS, and this is
+# stated rather than left to be discovered. Read off `helm template` of this
+# chart at this version, 2026-09-05:
+#
+#   ClusterRole arc-gha-rs-controller (cluster-wide)
+#     actions.github.com/*            create,delete,get,list,patch,update,watch
+#     ""/pods                         list,watch
+#     ""/serviceaccounts              list,watch
+#     rbac.authorization.k8s.io/roles list,watch,PATCH
+#     rbac.authorization.k8s.io/rolebindings list,watch
+#   Role arc-gha-rs-controller-listener (namespaced)
+#     ""/pods                         create,delete,get
+#     ""/pods/status                  get
+#     ""/secrets                      create,delete,get,patch,update
+#     ""/serviceaccounts              create,delete,get,patch,update
+#
+# `roles: patch` CLUSTER-WIDE is the one worth naming. The API server's
+# escalation check stops a patch from granting permissions the patcher does not
+# already hold, so it is not a free path to cluster-admin — but it is a
+# cluster-scoped write on RBAC objects, held by a controller whose whole purpose
+# is to run code GitHub sends it. `pods list,watch` is likewise cluster-wide.
+# Nothing in this repository narrows that: the chart does not offer a
+# single-namespace RBAC mode for the scale-set controller.
+#
+# DELETING THIS FILE IS THE SECOND HALF OF A TEARDOWN, NEVER THE FIRST OR THE
+# SAME COMMIT. The scale-set chart puts the finalizer
+# `actions.github.com/cleanup-protection` on its ServiceAccount, its Role and
+# its RoleBinding, and this controller is the only thing that clears them. Prune
+# it alongside infra/estate-front-runner.yaml and those three objects sit
+# `Terminating` until a person patches the finalizer off by hand. They are two
+# separate Applications, so sync waves order nothing here — waves order a sync,
+# and this is two deletions. The order is written out under "Removing it again"
+# in MIGRATION_NOTES.md.
+#
+# Licence and supply chain, per O10: Apache-2.0 (actions/actions-runner-controller
+# LICENSE), maintained by GitHub, chart served over HTTPS from the OCI registry
+# at ghcr.io. Chart 0.14.2 verified present on 2026-09-05
+# (`helm show chart oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set-controller`,
+# digest sha256:3081ba15c41f0aa791058dedd2a7406fece24c9aeaa94956c268e5099427a452).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: arc
+  namespace: argocd
+  annotations:
+    # With the other operators. The `AutoscalingRunnerSet` that uses its CRDs
+    # lands at -5, because a custom resource applied before its definition
+    # exists is a hard sync failure rather than something Argo retries.
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/actions/actions-runner-controller-charts
+    chart: gha-runner-scale-set-controller
+    targetRevision: 0.14.2
+    helm:
+      values: |
+        # Development sizing (D55). The controller reconciles one scale set on
+        # this cluster; the ceiling here is the ~19 database instances.
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: arc-systems
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The four CRDs (autoscalingrunnersets, autoscalinglisteners,
+      # ephemeralrunnersets, ephemeralrunners) ship in the chart's `crds/`
+      # directory, which Argo renders by default. They are large enough to
+      # exceed the last-applied-configuration annotation limit, which is a
+      # `kubectl apply` failure rather than an ARC one — the same reason
+      # cert-manager, keda and mariadb-operator carry this option.
+      - ServerSideApply=true

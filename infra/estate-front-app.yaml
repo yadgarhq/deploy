@@ -1,0 +1,40 @@
+# The two objects the `estate-front` runner needs before it exists: the policy
+# that confines it, and the stable edge address it dials.
+#
+# HAND-WRITTEN MANIFESTS RATHER THAN A CHART — two objects and nothing to
+# parameterise, the same reason infra/tls/ is a directory.
+#
+# ITS OWN Application, and a wave EARLIER than the scale set in
+# infra/estate-front-runner.yaml, for two reasons that are both ordering. The
+# `estate-front` namespace has to exist before the scale set's chart lands in
+# it, and `yadgar-edge` has to exist before a runner pod tries to reach the
+# address its `hostAliases` names. Neither is a hard sync failure if it happens
+# the other way round — a NetworkPolicy applied before its pods simply matches
+# nothing — but ordering them means a check run straight after a sync answers
+# the question rather than racing it.
+#
+# **NOTHING IN networkpolicy.yaml IS ENFORCED ON THIS CLUSTER.** kindnet
+# implements no NetworkPolicy. Read that file before treating the runner as
+# confined; the gap is tracked as `yadgarhq/docs` ledger 614, due 2026-10-03.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: estate-front
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-6"
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/estate-front
+  destination:
+    server: https://kubernetes.default.svc
+    # The namespace the runner pods land in. `yadgar-edge` carries its own
+    # `metadata.namespace` (envoy-gateway-system) because it belongs beside the
+    # Envoy pods it selects, not beside the runner that dials it.
+    namespace: estate-front
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
