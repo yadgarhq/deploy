@@ -59,6 +59,193 @@ spec:
         # read 2x and nothing would have said so.
         #
         # Found by checking the target list rather than trusting `up == 1`.
+        #
+        # ALERTING RULES — the first consumer any yadgar metric has ever had.
+        #
+        # WHY HERE AND NOT IN A MODULE CHART. A `PrometheusRule` is not
+        # reconcilable in this estate at all: there is no Prometheus Operator,
+        # no `monitoring.coreos.com` CRD and no `ServiceMonitor` anywhere
+        # (verified 2026-09-05 against the cluster's own CRD list, and against
+        # `deploy` by grep). A module chart emitting that CRD would also be a
+        # chart an adopter cannot install without a CRD they did not choose,
+        # which D80 forbids in as many words. So the rules live on the
+        # reference deployment's own Prometheus, where being opinionated is
+        # the point rather than a leak.
+        #
+        # STILL NO ALERTMANAGER, and that is a decision rather than an
+        # omission. Nothing in `deploy` or `argocd` holds an SMTP relay, a
+        # Slack webhook, a PagerDuty routing key or any other receiver —
+        # checked, not assumed. Enabling it would add a Deployment, a PVC and
+        # an Argo health check in order to route every alert to the chart's
+        # default null receiver: a component whose green means nothing, and
+        # which makes the estate LOOK like it pages. That is the exact
+        # confusion this change exists to remove, so it is refused. The
+        # sentence above still holds — they can be enabled the day something
+        # wants them.
+        #
+        # WHAT A RULE WITH NO RECEIVER BUYS, since it is less than a page and
+        # more than nothing. The predicate stops being prose in a library's doc
+        # comment and becomes a reviewed, diffable, `promtool`-checkable
+        # expression that this repository owns. Prometheus evaluates alerting
+        # rules whether or not any alertmanager is configured, so `ALERTS` and
+        # `ALERTS_FOR_STATE` become queryable series and `/alerts` shows the
+        # state. A metric is a capability and not yet a signal; a rule with no
+        # receiver is a reviewed predicate and not yet a page. Each is one
+        # honest step, and neither should be described as the next one.
+        #
+        # ABSENCE IS NEVER READ AS ZERO. Every rule below is a comparison on a
+        # series that must EXIST to match, so a metric no pod publishes fires
+        # nothing. There are deliberately NO `absent()` companions: measured
+        # 2026-09-05, this Prometheus holds exactly ONE `yadgar_*` series name
+        # in the whole store, so an `absent()` rule would fire immediately, for
+        # every pod, forever, and be silenced within a day. The limit that
+        # buys is stated rather than hidden — a `> 0` rule cannot notice its
+        # own reporter going away, and no rule here can, until a series'
+        # presence is itself a deployment invariant somebody declared.
+        serverFiles:
+          alerting_rules.yml:
+            groups:
+              - name: yadgar
+                rules:
+                  # ADR-0532's lazy dial traded operator legibility for client
+                  # legibility. A service whose upstream is absent used to show
+                  # as CrashLoopBackOff with climbing restarts and a Degraded
+                  # Argo Application; it now shows 1/1 Running and Argo
+                  # Healthy, with nothing anywhere saying it is broken. The
+                  # replacement offered was an ERROR log line per refresh tick,
+                  # and this namespace runs a Prometheus server and NO log
+                  # shipper — no promtail, loki, fluent-bit or vector — so that
+                  # line reaches `kubectl logs` and an operator who has already
+                  # guessed the answer. This is the rule the gauge was shaped
+                  # for, and it is the reason the gauge exists.
+                  #
+                  # INERT UNTIL AN ADOPTION CAR MOVES THREE PINS. `gateway`,
+                  # `iam` and `task` all pin `yadgar-dial` at tag v0.2.0, and
+                  # the gauge arrived in v0.2.1. No pod publishes it, so this
+                  # rule matches nothing today — confirmed by scraping a pod's
+                  # own /metrics, not inferred from the pins.
+                  #
+                  # NO `by (upstream)` AGGREGATION, on purpose. An alerting
+                  # rule has no `by` clause; the expression's OUTPUT LABELS are
+                  # what fires and what an annotation can name. This form keeps
+                  # `upstream` and `pod` and `namespace`, so one alert names
+                  # both the absent upstream and which replica cannot reach it.
+                  # `max by (upstream) (...)` reads closer to the English and
+                  # throws the pod away.
+                  - alert: DialUpstreamNeverResolved
+                    expr: max_over_time(yadgar_dial_upstream_never_resolved[5m]) > 0
+                    for: 2m
+                    labels:
+                      severity: critical
+                    annotations:
+                      summary: >-
+                        {{ $labels.pod }} has never resolved its upstream
+                        {{ $labels.upstream }}
+                      description: >-
+                        The process is running and reports Ready, and no
+                        address for {{ $labels.upstream }} has EVER been given
+                        to its balancer since boot — so every call through that
+                        seam fails. This is not a transient blip: the value
+                        is a LATCH rather than a sample, so a 1 says no address
+                        has arrived since boot, not that one lookup just
+                        failed. Check that the upstream's Service and pods
+                        exist in {{ $labels.namespace }}.
+                  # A file the deployment NAMED and the process could not read.
+                  # Rotation of that file cannot be noticed, so the pod will
+                  # keep serving material it can no longer see change.
+                  #
+                  # `for: 10m` IS SIZED AGAINST THE POLL, not picked. The
+                  # charts set `tlsRotation.pollSeconds: 60` and the library's
+                  # own default is 60s, and the code is explicit that a file
+                  # unreadable at this instant is the transient state kubelet
+                  # passes through while it rewrites a mount. Roughly ten polls
+                  # have to agree before this fires; one mount rewrite cannot.
+                  #
+                  # Absence here means a pod with an EMPTY watch set, or one
+                  # that has not finished its first poll — the gauge is
+                  # published only inside the loop. It does not mean zero, and
+                  # `> 0` is the shape that respects the difference.
+                  - alert: RotationWatchedFilesUnreadable
+                    expr: yadgar_rotation_watched_files_unreadable > 0
+                    for: 10m
+                    labels:
+                      severity: warning
+                    annotations:
+                      summary: >-
+                        {{ $labels.service }} cannot read
+                        {{ $value }} of its watched files
+                      description: >-
+                        A path this deployment told {{ $labels.service }} to
+                        watch has been unreadable for ten consecutive polls, so
+                        it is a configuration defect rather than a mount being
+                        rewritten. Rotation of those files cannot be noticed
+                        while this holds, and the pod goes on presenting
+                        whatever it loaded at boot. The pod is
+                        {{ $labels.pod }}; the log line at boot names the paths.
+                  # THE ONLY RULE HERE THAT CAN FIRE TODAY.
+                  # `yadgar_tls_certificate_not_after_seconds` is the one
+                  # `yadgar_*` series this Prometheus currently holds — `iam`
+                  # and `task` both publish it, `kind="serving"`.
+                  #
+                  # FOURTEEN DAYS, ARITHMETIC RATHER THAN TASTE. All eight
+                  # LEAF certificates this repository declares — four serving
+                  # and three client under `infra/internal-tls/`, plus the edge
+                  # leaf in `infra/tls/` — set `duration: 2160h` (90d) with
+                  # `renewBefore: 720h` (30d), so cert-manager rewrites the
+                  # Secret with 30 days left. Firing at 14 means sixteen days
+                  # of renewal-or-reload having failed before anyone is told,
+                  # and fourteen days of runway after. It is a BACKSTOP behind
+                  # cert-manager rather than the first line, and it sits far
+                  # enough below `renewBefore` that a normal renewal cannot
+                  # trip it.
+                  #
+                  # THE INTERNAL ROOT IS NOT COVERED, and naming that is the
+                  # honest half of drawing this boundary. It is `duration:
+                  # 87600h` with `renewBefore: 8760h`
+                  # (`infra/internal-tls/issuer.yaml`) — the one certificate
+                  # here on a different clock — and no process PRESENTS it, so
+                  # it is never exported by this gauge and nothing alerts on
+                  # its expiry.
+                  #
+                  # It measures what the PROCESS loaded, which is the gap
+                  # cert-manager's own metrics cannot see: cert-manager knows
+                  # what it issued, this knows what is being presented. The
+                  # value is exported once at boot and that is correct by
+                  # construction — a material change makes the rotation watcher
+                  # drain and exit 0, so the process restarts onto the new
+                  # certificate and re-exports.
+                  #
+                  # An already-expired certificate satisfies this too, since
+                  # the difference goes negative. That is the worse state and
+                  # the same action, so it is not split into a second rule.
+                  #
+                  # NO `for:` HERE, and it is the one rule in this group
+                  # without one. The other two watch a value that moves, so a
+                  # pending window is what separates a condition from a blip.
+                  # This value is exported ONCE, at boot, and then never
+                  # changes for the life of the process — there is nothing to
+                  # flap, so a single scrape is already the whole signal. A
+                  # pending window would only delay the alert past a restart,
+                  # and worse, a pod restarting more often than that window
+                  # would reset the timer every time and never fire. A rule a
+                  # restart loop can silence is the failure this whole file
+                  # exists to correct.
+                  - alert: TlsCertificateExpiringSoon
+                    expr: yadgar_tls_certificate_not_after_seconds - time() < 14 * 24 * 3600
+                    labels:
+                      severity: warning
+                    annotations:
+                      summary: >-
+                        {{ $labels.service }}'s {{ $labels.kind }} certificate
+                        expires in under 14 days
+                      description: >-
+                        The certificate {{ $labels.pod }} actually loaded
+                        expires at {{ $value }} seconds from now. cert-manager
+                        renews these at 30 days remaining, so reaching 14 means
+                        either the renewal or the pod's reload has been failing
+                        for about a fortnight. Check the Certificate resource
+                        and whether the pod restarted after the Secret was
+                        rewritten.
   destination:
     server: https://kubernetes.default.svc
     namespace: observability
