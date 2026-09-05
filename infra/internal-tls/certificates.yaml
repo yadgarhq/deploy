@@ -42,21 +42,25 @@
 # window, never its expiry — such a pod must restart within 90 days of its
 # certificate being issued, or it serves an expired one.
 #
-# THAT RESIDUAL IS CLOSED FOR THREE PROCESSES AND OPEN FOR TWO, and TLS is on
-# now, so it no longer blocks nothing. `gateway`, `iam` and `task` carry the
-# rotation watcher of ADR-0523 — visible as `TLS_ROTATION_POLL_SECS` on their
-# pods. It notices the rewrite, waits out a splay, drains and exits 0, and the
-# pod comes back on the new material. `iam-db` and `task-db` take
-# `yadgar-lifecycle` with `default-features = false`, which compiles that
-# watcher out entirely, so `iam-db-tls` and `task-db-tls` still wait for a
-# restart to arrive from somewhere else.
+# THAT RESIDUAL IS CLOSED FOR ALL FIVE PROCESSES, and TLS is on now, so it no
+# longer blocks nothing. Every service carries the rotation watcher of ADR-0523
+# — visible as `TLS_ROTATION_POLL_SECS` on their pods. It notices the rewrite,
+# waits out a splay, drains and exits 0, and the pod comes back on the new
+# material.
 #
-# THE SAME MANIFEST LINE ALSO COSTS THOSE TWO THE EXPIRY GAUGE. `rotate` is the
-# feature that owns `yadgar_tls_certificate_not_after_seconds`, so
-# `TlsCertificateExpiringSoon` in `infra/prometheus.yaml` cannot warn about
-# `iam-db-tls` or `task-db-tls` either — the leaves with no watcher are exactly
-# the leaves with no alert. Both halves are one fix in each of those two
-# repositories.
+# **THREE, NOT FIVE, UNTIL 2026-09-05.** `iam-db` and `task-db` took
+# `yadgar-lifecycle` with `default-features = false`, which compiled the watcher
+# out entirely — and the same manifest line cost those two the expiry gauge,
+# because `rotate` is the feature that owns
+# `yadgar_tls_certificate_not_after_seconds`, so `TlsCertificateExpiringSoon`
+# could not warn about `iam-db-tls` or `task-db-tls` either. The leaves with no
+# watcher were exactly the leaves with no alert. `iam-db`#22 and `task-db`#37
+# ("take the rotation watcher back") removed that line and wired
+# `rotate::watch` into both `main.rs`, closing both halves at once.
+#
+# Read from source on each repository's `main`, and from the tags `argocd` pins
+# — NOT from a scrape. This reference deployment's kind cluster carries no
+# workloads, so no series was observed for either service.
 #
 # ── THE RENEWAL INSTANT IS STAGGERED, ONE SERVICE PER INSTANT ───────────────
 # EVERY LEAF UNDER THIS DIRECTORY CARRIES A DISTINCT `renewBefore`. The values
@@ -127,13 +131,16 @@
 # the first cycle. Two separate single-service restarts are the shape that
 # survives, and each is smaller than the joint one would have been.
 #
-# ── `iam-db-tls` AND `task-db-tls` ARE STAGGERED THOUGH NOTHING WATCHES THEM ─
-# `iam-db` and `task-db` build `yadgar-lifecycle` with
-# `default-features = false`, which compiles the rotation watcher — and the
-# expiry gauge beside it — out of the binary entirely. Neither reacts to a
-# renewal today. They are scheduled here anyway so the schedule is already
-# correct on the day a watcher is added, rather than being one more thing to
-# remember then.
+# ── `iam-db-tls` AND `task-db-tls` ARE STAGGERED, AND SOMETHING WATCHES THEM
+# NOW ────────────────────────────────────────────────────────────────────────
+# `iam-db` and `task-db` used to build `yadgar-lifecycle` with
+# `default-features = false`, which compiled the rotation watcher — and the
+# expiry gauge beside it — out of the binary entirely, so neither reacted to a
+# renewal. `iam-db`#22 and `task-db`#37 ("take the rotation watcher back")
+# removed that flag and wired `rotate::watch` into each `main.rs`, confirmed
+# from source on each repository's main. They were scheduled here before that
+# landed so the schedule was already correct on the day the watcher came
+# back — which is exactly what has now happened.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
