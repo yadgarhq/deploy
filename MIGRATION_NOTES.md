@@ -1364,3 +1364,102 @@ exists — `gh api "/orgs/yadgarhq/packages?package_type=container"` lists twelv
 on 2026-09-05 and not this one. The visibility page and the digest pin are
 written from the packages API's documented surface, which carries no visibility
 endpoint, and from how those twelve already behave.
+
+---
+
+## The configuration repository, and the two-step cut-over that follows (ADR-0569, ADR-0570)
+
+**NOTHING TO RUN FOR THE FIRST STEP.** `infra/config-app.yaml` points Argo at
+`yadgarhq/config`, which renders seven ConfigMaps into the `yadgar` namespace at
+sync wave -12. No pod mounts them yet, so a sync of this change adds objects and
+rolls nothing.
+
+**Why they land before anything reads them.** ADR-0569 gives a configuration knob
+one source, no compiled-in default, and a refusal to boot when it is absent. A
+service that reads a knob therefore cannot start until its ConfigMap exists, so
+the ConfigMaps have to be in the cluster first. Wave -12 is the same wave the
+credential bootstrap uses and for the same reason.
+
+### What still has to happen, per service
+
+The rotation schedule — `TLS_ROTATION_POLL_SECS` and `TLS_ROTATION_SPLAY_MAX_SECS`
+— is the first knob moving. `yadgar-lifecycle` now reads it from
+`/etc/yadgar/config/shared/shared.yaml` and the compiled-in `DEFAULT_POLL = 60s`
+and `DEFAULT_SPLAY_MAX = 300s` are deleted. **The five services do not read it
+yet**, because each pins that crate by an immutable git tag and the tag carrying
+the reader has not been cut. Merging `yadgarhq/lifecycle` cuts it.
+
+**A STAGED CUT-OVER, DELIBERATELY.** The value has to come from one source or
+the other at every moment. Doing it in one change would need the chart to stop
+setting the environment variable and the binary to start reading the file in the
+same rollout, and a pod that picks up half of that has no schedule at all. So:
+
+1. **Now.** The ConfigMaps exist. The services keep reading the environment
+   variables their own charts set. Nothing changes at runtime.
+2. **Per service, TWO pull requests, IN THIS ORDER** — in `gateway`, `iam`,
+   `task`, `iam-db` and `task-db`. Two, not one, and the reason is mechanical.
+
+   **THE CHART AND THE BINARY ARRIVE BY DIFFERENT PATHS AND DO NOT LAND
+   TOGETHER.** Argo takes the module chart from the module repository at HEAD
+   (`yadgarhq/argocd`, `applicationsets/modules.yaml`), so a chart change is live
+   the moment the pull request merges. The image is not: it is pinned by digest
+   in `yadgarhq/argocd`'s `versions/<repo>.yaml`, which `ci-release` writes
+   minutes later from a separate pipeline in a sixth repository. A single pull
+   request doing both halves therefore rolls the pod — the pod template changed —
+   onto the OLD binary with the environment variables already deleted.
+   `Schedule::from_env` takes its `None => Ok(default)` arm, so that pod runs
+   `DEFAULT_POLL = 60s` and `DEFAULT_SPLAY_MAX = 300s`, the two constants this
+   whole change exists to delete, with `shared.yaml` mounted and unread. An
+   operator who set `pollSeconds: 17` gets 60. Normally the digest lands minutes
+   later and the window closes itself. **If `ci-release` fails** — the image
+   build, Trivy, or a `deployment` job that finds no release App — **the chart
+   change is already live and the window does not close.** Nothing alerts on it;
+   the only signal is that the `watching` count in the boot line does not move,
+   because the old binary contributes no `Configuration` material.
+
+   - **2a — ADD the new source, KEEP the old one.** `Cargo.toml`: move the
+     `yadgar-lifecycle` pin from `v0.1.3` to the tag the lifecycle merge cuts.
+     `src/main.rs`: replace `rotate::Schedule::from_env()` with
+     `rotate::Configuration::mounted()`, and pass that value to both
+     `.schedule()` and the service's `watch_set` so the document joins the watch
+     set. `chart/templates/deployment.yaml`: add the `shared` and `<service>`
+     ConfigMap volumes and their mounts, as DIRECTORIES under
+     `/etc/yadgar/config/<name>`, with no `subPath` and no `optional: true`.
+     **Leave the two `TLS_ROTATION_*` environment variables and the `tlsRotation`
+     values block exactly where they are.** Old binary plus environment resolves;
+     new binary plus file resolves; there is no arrangement of the two that
+     resolves to nothing.
+   - **2b — DELETE the old source, and only after the digest lands.** Check
+     `yadgarhq/argocd`'s `versions/<repo>.yaml` carries the release 2a cut, then:
+     `chart/templates/deployment.yaml` — delete the two `TLS_ROTATION_*`
+     environment variables. `chart/values.yaml` — delete the `tlsRotation` block;
+     it is the second source ADR-0569 forbids, and leaving it would be a value
+     that looks live and is not. `README.md` — the two rows in the environment
+     table become a pointer to `yadgarhq/config`. Chart only, no Rust, so this
+     one lands whole on merge and there is nothing to wait for.
+
+**The expected `watching` count in each service's boot line goes up by one** when
+its 2a lands — one file, `shared/shared.yaml`, because no service has a knob of
+its own yet. **That count is also the check that 2a completed.** A pod that came
+back with the count unmoved is running the old binary, so its release did not
+reach `yadgarhq/argocd`; do not open 2b until the count has moved. It goes up by two once one does. The base number is whatever
+`<service>/src/rotate.rs`'s `watch_set` produces under this deployment's values;
+it was not verified against a running estate, because the cluster was bare when
+this was written.
+
+### What a mistake looks like, at each level
+
+| what is wrong                         | what you see                                                      |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| the ConfigMap is absent               | the pod stays in `ContainerCreating`, with an event naming it     |
+| it is mounted somewhere else          | the process exits, naming `/etc/yadgar/config/shared/shared.yaml` |
+| the knob is deleted from the document | the process exits, naming `tlsRotation.pollSeconds` and the file  |
+| the knob is left empty                | the same, reported as empty rather than as missing                |
+
+None of these is a panic and none needs a backtrace to read: the message comes
+back through `main`'s `Result` and is printed as `Error: <the sentence above>`.
+
+**Editing `shared.yaml` restarts every service that mounts it.** That is ADR-0523
+working as designed — the mounted file is in the watch set, a changed digest ends
+the serve, and the pod drains and comes back on the new value. Do not read that
+roll as a fault.

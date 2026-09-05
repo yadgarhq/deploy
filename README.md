@@ -135,6 +135,7 @@ need on the rare occasion it arises.
 | `infra/valkey-app.yaml` + `infra/valkey/`             | one shared cache (D21), hand-written rather than a chart                                         |
 | `infra/nats.yaml`                                     | JetStream, asynchronous work only (D22)                                                          |
 | `infra/cert-manager.yaml`                             | certificate issuance and renewal for the TLS edge (D71)                                          |
+| `infra/config-app.yaml`                               | the installation's configuration, from `yadgarhq/config` (ADR-0569, ADR-0570)                    |
 | `infra/tls-app.yaml` + `infra/tls/`                   | the ClusterIssuer, the gateway certificate and the Gateway itself (D71)                          |
 | `infra/arc.yaml`                                      | actions-runner-controller — runs no workflow itself; see its cluster-wide RBAC below             |
 | `infra/estate-front-app.yaml` + `infra/estate-front/` | the runner's NetworkPolicy and the stable edge address it dials                                  |
