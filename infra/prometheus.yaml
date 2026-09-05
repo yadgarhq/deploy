@@ -98,13 +98,22 @@ spec:
         # nothing. There are deliberately NO `absent()` companions, and the
         # reason has MOVED since this was first written. It used to be that
         # only one `yadgar_*` name existed, so any `absent()` would fire at
-        # once and be silenced within a day. Measured 2026-09-05 the store
-        # holds THREE — `yadgar_dial_upstream_never_resolved`,
+        # once and be silenced within a day. Measured on 2026-09-05 WHILE THE
+        # ESTATE WAS DEPLOYED, the store held THREE —
+        # `yadgar_dial_upstream_never_resolved`,
         # `yadgar_rotation_watched_files_unreadable` and
         # `yadgar_tls_certificate_not_after_seconds`, one per rule below — so
-        # an `absent()` on any of those names would now fire never, which is
-        # just as useless. Every real gap here is a missing LABEL VALUE inside
-        # a name that is present: no `upstream="iam"`, no `service="iam-db"`.
+        # an `absent()` on any of those names would fire never, which is just
+        # as useless. That cluster has since been recreated bare and carries no
+        # workloads, so nothing is scraped TODAY; the argument rests on which
+        # names exist whenever the estate runs, not on what the store holds at
+        # this moment. Every real gap this file has ever had was a missing
+        # LABEL VALUE inside a name that is present, rather than a missing name
+        # — the two worked examples were `upstream="iam"` and
+        # `service="iam-db"`, and BOTH have since closed (`gateway`#34,
+        # `iam-db`#22, `task-db`#37), which is itself the point: a gap of this
+        # shape opens and closes in another repository without this file
+        # changing.
         # `absent()` cannot see that unless the rule NAMES the value it
         # expects, and nothing has declared which series must exist. The limit
         # that buys is stated rather than hidden — a `> 0` rule cannot notice
@@ -127,32 +136,36 @@ spec:
                   # guessed the answer. This is the rule the gauge was shaped
                   # for, and it is the reason the gauge exists.
                   #
-                  # LIVE, AND COVERING THREE HOPS OF FOUR. `gateway`, `iam`
-                  # and `task` now pin `yadgar-dial` at v0.2.1, which is the
-                  # tag the gauge arrived in. Measured against this store on
-                  # 2026-09-05, `yadgar_dial_upstream_never_resolved` carries
-                  # exactly three `upstream` values — `task` from `gateway`,
-                  # `iam-db` from `iam`, `task-db` from `task` — two series
-                  # each, one per replica.
+                  # WIRED FOR ALL FOUR HOPS, AND NOT RE-MEASURED SINCE.
+                  # `gateway`, `iam` and
+                  # `task` pin `yadgar-dial` at v0.2.1, which is the tag the
+                  # gauge arrived in. A prior revision of this comment measured
+                  # this store on 2026-09-05 and found only three `upstream`
+                  # values — `task` from `gateway`, `iam-db` from `iam`,
+                  # `task-db` from `task` — because `gateway::upstream::
+                  # connect_iam` built its own `Endpoint` and bypassed `dial`
+                  # entirely, so the hop carrying every login, enrolment and
+                  # attestation published nothing.
                   #
-                  # THE HOP IT DOES NOT COVER IS `gateway` -> `iam`, and that
-                  # is the one carrying every login, enrolment and attestation.
-                  # `gateway::upstream::connect_iam` does not go through
-                  # `yadgar_dial` at all: it builds its own `Endpoint` and
-                  # calls `connect_lazy` on it, because ADR-0514 requires the
-                  # URI scheme and the TLS configuration to be decided in ONE
-                  # expression and `yadgar_dial` decides the scheme itself.
-                  # The gauge is written from INSIDE `dial`, so the hop that
-                  # bypasses `dial` publishes nothing. No `upstream="iam"`
-                  # series exists for this rule to match.
+                  # `gateway`#34 ("Route the iam hop through yadgar-dial, so
+                  # the alert can see it") closed that gap: `connect_iam` now
+                  # calls `yadgar_dial::connect`/`connect_tls` exactly as
+                  # `connect_task` does, and the module's own doc comment
+                  # states plainly that routing both hops through `dial` is
+                  # what publishes the absence gauge for each. Read on
+                  # `gateway` main this is the current shape — confirmed from
+                  # source, NOT from a fresh scrape, because this reference
+                  # deployment's kind cluster carries no workloads to scrape.
                   #
-                  # SO A DEAD `gateway` -> `iam` STILL LOOKS HEALTHY, which is
-                  # the exact condition ADR-0532 created and this rule was
-                  # written to end. Closing it means routing `connect_iam`
-                  # through `dial` without breaking ADR-0514, or publishing the
-                  # gauge from `gateway` itself. Either is its own change and
-                  # neither is a threshold to tune here. Until one lands, read
-                  # a quiet rule as "three hops are fine", never "all four".
+                  # SO THIS RULE'S EXPRESSION HAS NO LABEL MATCHER AND NEEDS
+                  # NONE: `max_over_time(yadgar_dial_upstream_never_resolved
+                  # [5m]) > 0` fires on whatever `upstream` values exist,
+                  # and now that `connect_iam` publishes one, `gateway` -> `iam`
+                  # is covered the same way the other three hops are. Before
+                  # trusting that live, scrape a `gateway` pod's own `/metrics`
+                  # for `upstream="iam"` the way the three-hop count above was
+                  # originally confirmed — this revision has not re-run that
+                  # scrape.
                   #
                   # NO `by (upstream)` AGGREGATION, on purpose. An alerting
                   # rule has no `by` clause; the expression's OUTPUT LABELS are
@@ -194,13 +207,22 @@ spec:
                   # that has not finished its first poll — the gauge is
                   # published only inside the loop — or a pod with NO WATCHER
                   # AT ALL, which is the cause this used to leave out.
-                  # Measured 2026-09-05, this series carries `service` values
-                  # `gateway`, `iam` and `task`, and neither `-db`. `iam-db`
-                  # and `task-db` take `yadgar-lifecycle` with
-                  # `default-features = false`, which compiles out the whole
-                  # `rotate` module — and that module owns this gauge AND the
-                  # expiry gauge the rule below wants. So both rules are dark
-                  # on the same two pods for the same one manifest line.
+                  # A prior revision of this comment measured this series on
+                  # 2026-09-05 and found `service` values `gateway`, `iam` and
+                  # `task` only, because `iam-db` and `task-db` built
+                  # `yadgar-lifecycle` with `default-features = false`, which
+                  # compiled the whole `rotate` module out — the module that
+                  # owns this gauge AND the expiry gauge the rule below wants.
+                  #
+                  # BOTH REPOSITORIES TOOK THE WATCHER BACK since then —
+                  # `iam-db`#22 and `task-db`#37, "take the rotation watcher
+                  # back" — and neither manifest carries `default-features =
+                  # false` on `yadgar-lifecycle` any more; both now wire
+                  # `rotate::watch` into their own `main.rs` the same way
+                  # `iam` and `task` do. Confirmed from source on each
+                  # repository's main, not from a fresh scrape: this reference
+                  # deployment's kind cluster carries no workloads, so the
+                  # `service` values above have not been re-measured live.
                   # Absence does not mean zero, and `> 0` is the shape that
                   # respects the difference.
                   - alert: RotationWatchedFilesUnreadable
@@ -220,10 +242,11 @@ spec:
                         while this holds, and the pod goes on presenting
                         whatever it loaded at boot. The pod is
                         {{ $labels.pod }}; the log line at boot names the paths.
-                  # THE ONLY RULE HERE THAT CAN FIRE TODAY.
-                  # `yadgar_tls_certificate_not_after_seconds` is the one
-                  # `yadgar_*` series this Prometheus currently holds — `iam`
-                  # and `task` both publish it, `kind="serving"`.
+                  # NOT THE ONLY RULE HERE THAT CAN FIRE TODAY ANY MORE — see
+                  # below. `yadgar_tls_certificate_not_after_seconds` is a
+                  # `yadgar_*` series this Prometheus holds; `iam` and `task`
+                  # publish it at `kind="serving"`, and `iam-db` and `task-db`
+                  # now do too (see below).
                   #
                   # FOURTEEN DAYS, ARITHMETIC RATHER THAN TASTE. All eight
                   # LEAF certificates this repository declares — four serving
@@ -245,39 +268,44 @@ spec:
                   # line, and it sits far enough below every `renewBefore` here
                   # that a normal renewal cannot trip it.
                   #
-                  # THIS RULE COVERS TWO CERTIFICATES OF NINE, and naming
-                  # the other seven is the honest half of drawing this
-                  # boundary. Measured 2026-09-05 against this store,
-                  # `yadgar_tls_certificate_not_after_seconds` carries
-                  # `service="iam"` and `service="task"` at `kind="serving"`
-                  # and nothing else. The gaps have TWO different causes that
-                  # need two different fixes, so they are not flattened into
-                  # one sentence.
+                  # THIS RULE NOW COVERS FOUR CERTIFICATES OF NINE, and naming
+                  # the other five is the honest half of drawing this
+                  # boundary. A prior revision of this comment measured this
+                  # store on 2026-09-05 against `service="iam"` and
+                  # `service="task"` only and named `iam-db-tls` and
+                  # `task-db-tls` as PRESENTED-but-uncounted: both pods serve
+                  # TLS and both are scraped, but `iam-db` and `task-db` took
+                  # `yadgar-lifecycle` with `default-features = false`, which
+                  # gated the whole `rotate` module — the module that owns
+                  # this gauge — off.
                   #
-                  # PRESENTED, BUT THE EXPORTER IS COMPILED OUT — `iam-db-tls`
-                  # and `task-db-tls`, two of the four serving leaves under
-                  # `infra/internal-tls/`. Both pods serve TLS
-                  # (`LISTEN_TLS_ENABLED=1`) and both are scraped (`up` is 1),
-                  # so this is a missing SERIES and not a missing target,
-                  # which is the shape no `up`-based rule can see. `iam-db`
-                  # and `task-db` take `yadgar-lifecycle` with
-                  # `default-features = false`, and that crate gates its whole
-                  # `rotate` module — the module that owns this gauge — on the
-                  # feature `default` would have enabled. The fix is one
-                  # manifest line in each of those two repositories.
+                  # `iam-db`#22 and `task-db`#37, "take the rotation watcher
+                  # back", removed that flag in both manifests and wired
+                  # `rotate::watch` into each `main.rs`. Confirmed from
+                  # source on each repository's main: `yadgar-lifecycle` is no
+                  # longer pinned `default-features = false` in either
+                  # `Cargo.toml`, and both watch their own `LISTEN_TLS_*`
+                  # material the same way `iam` and `task` do. So
+                  # `yadgar_tls_certificate_not_after_seconds` should now
+                  # additionally carry `service="iam-db"` and
+                  # `service="task-db"` at `kind="serving"` — NOT re-measured
+                  # live, because this reference deployment's kind cluster
+                  # carries no workloads to scrape.
                   #
-                  # NOTHING PRESENTS THE OTHER FIVE, so they can never appear
-                  # here at all. The internal root is `duration: 87600h` with
-                  # `renewBefore: 8760h` (`infra/internal-tls/issuer.yaml`),
-                  # the one certificate on a different clock. `gateway-tls` is
-                  # served by the edge Gateway's listener rather than by any
-                  # yadgar process. `gateway-client-tls`, `iam-client-tls` and
+                  # NOTHING PRESENTS THE REMAINING FIVE, so they can never
+                  # appear here at all. The internal root is `duration:
+                  # 87600h` with `renewBefore: 8760h`
+                  # (`infra/internal-tls/issuer.yaml`), the one certificate on
+                  # a different clock. `gateway-tls` is served by the edge
+                  # Gateway's listener rather than by any yadgar process.
+                  # `gateway-client-tls`, `iam-client-tls` and
                   # `task-client-tls` are issued and mounted into no pod —
-                  # checked against the live volumes, not inferred.
+                  # checked against the live manifests in `argocd`, not
+                  # inferred.
                   #
-                  # SO A QUIET RULE HERE MEANS `iam` AND `task` ARE FINE. It
-                  # says nothing about the other seven. It is still worth
-                  # landing, for the reason below.
+                  # SO A QUIET RULE HERE MEANS `iam`, `task`, `iam-db` AND
+                  # `task-db` ARE FINE. It says nothing about the other five.
+                  # It is still worth landing, for the reason below.
                   #
                   # It measures what the PROCESS loaded, which is the gap
                   # cert-manager's own metrics cannot see: cert-manager knows
