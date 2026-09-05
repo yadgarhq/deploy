@@ -1,0 +1,74 @@
+# A stable in-cluster address for the edge, so the contract suite can dial the
+# edge by the name a real client uses.
+#
+# WHY THIS EXISTS. `yadgarhq/estate`'s suite dials `gateway.yadgar.internal` and
+# validates the leaf against the committed name-constrained root (ADR-0490,
+# ADR-0504). Nothing in the cluster resolves that name — verified 2026-09-05:
+# `kube-system/coredns`'s Corefile carries no `rewrite` line. Only RESOLUTION is
+# redirected by this Service and the `hostAliases` entry that names it; TRUST is
+# not. The client still sends `gateway.yadgar.internal` as SNI and still
+# validates the same certificate chain. A Service the suite dialled DIRECTLY,
+# with its own name in SNI, would be testing a path no client uses — the defect
+# ADR-0562 exists to prevent.
+#
+# WHY NOT THE LIVE SERVICE. Envoy Gateway creates `envoy-yadgar-edge-a2648de2`
+# for the `edge` Gateway. The suffix is a hash of the Gateway's identity and
+# changes when the Gateway is recreated, so nothing may depend on the name. This
+# Service selects the same pods by the labels the proxy actually carries, read
+# off `kubectl get pods -n envoy-gateway-system --show-labels` on 2026-09-05:
+#
+#   app.kubernetes.io/name=envoy
+#   gateway.envoyproxy.io/owning-gateway-name=edge
+#   gateway.envoyproxy.io/owning-gateway-namespace=yadgar
+#
+# `port: 443` → `targetPort: 10443`, which is what the live Service already
+# does. The Envoy pods LISTEN ON 10443; 443 is the Service port alone. The same
+# fact decides which port the NetworkPolicy beside this file has to name.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THE PINNED ClusterIP, AND WHY IT IS PINNED
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `hostAliases` on the runner pod maps a NAME to an ADDRESS, and it cannot be
+# given a DNS name to chase. So the address has to be knowable when the manifest
+# is written, which means pinning it.
+#
+# 10.96.0.100 was chosen against measured facts, not picked. The API server runs
+# with `--service-cluster-ip-range=10.96.0.0/16` (read from the live
+# `kube-apiserver` pod spec, 2026-09-05). Kubernetes reserves the lower band of
+# a Service CIDR for explicitly-requested addresses — for a /16 that band is the
+# first 256 addresses — and dynamic allocation avoids it. Every dynamically
+# allocated Service on this cluster today sits above 10.96.24.x; the only
+# occupants of 10.96.0.x are `kubernetes` (10.96.0.1) and `kube-dns`
+# (10.96.0.10), both themselves pinned.
+#
+# A PIN FAILS CLOSED. If the address were ever taken, the API server REFUSES to
+# create this Service and Argo reports the Application Degraded with the
+# conflict in the message. It cannot silently point somewhere else. That is what
+# makes a pin acceptable here and a guessed CIDR unacceptable in the policy file
+# beside it.
+#
+# IT COUPLES THIS FILE TO A VALUE THE nix REPO OWNS. The Service CIDR is set
+# when the cluster is created (ADR-0480: nix owns the cluster, this repository
+# owns what runs inside it). Change the CIDR and this address is wrong — the
+# same standing obligation the NetworkPolicy's excepted ranges already carry.
+# Re-measure both when the cluster is rebuilt.
+apiVersion: v1
+kind: Service
+metadata:
+  name: yadgar-edge
+  namespace: envoy-gateway-system
+  labels:
+    app.kubernetes.io/part-of: estate-front
+spec:
+  type: ClusterIP
+  clusterIP: 10.96.0.100
+  selector:
+    app.kubernetes.io/name: envoy
+    gateway.envoyproxy.io/owning-gateway-name: edge
+    gateway.envoyproxy.io/owning-gateway-namespace: yadgar
+  ports:
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 10443
