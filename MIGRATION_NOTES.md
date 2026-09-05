@@ -1080,6 +1080,93 @@ declare actions-runner-controller and the scale set `yadgarhq/estate`'s
 `smoke.yaml` runs on. Argo applies all three. **Two things it cannot do are
 below, and until both are done a dispatched smoke run has no runner.**
 
+### What this is, in plain terms
+
+Skip this if you already know ARC; it exists because the rest of this section
+explains HOW without ever saying WHAT.
+
+`yadgarhq/estate` runs a smoke suite after every deploy. That suite has to talk
+to services **inside** the kind cluster, which a GitHub-hosted runner on the
+public internet cannot reach. So the runner has to live in the cluster instead.
+
+**actions-runner-controller (ARC)** is the GitHub-published Kubernetes operator
+that does this. The shape is:
+
+- A **controller** in `arc-systems` watches for scale-set definitions. Installed
+  and Running.
+- For each scale set it starts a **listener** pod, which holds the credential and
+  long-polls GitHub asking "any jobs waiting for the label `estate-front`?" The
+  listener runs no workflow code — that separation is why ADR-0563 tolerates the
+  App's broad permissions.
+- When a job appears, the listener creates a **runner pod** from a container
+  image, which registers itself with GitHub, executes the job, and is destroyed.
+  `minRunners: 0`, so nothing exists between jobs and an idle cluster is correct.
+
+Hence exactly two operator steps, and each maps to one of those bullets:
+
+1. **The runner image** is what the runner pod is made from. The stock
+   `ghcr.io/actions/actions-runner` image has no Rust toolchain, and the smoke
+   suite is a Rust test binary — so the estate builds its own with rustup baked
+   in, rather than curl-piping a toolchain into a pod that holds the `estate`
+   environment's secrets at job time.
+2. **The `estate-runner-github` Secret** is what the listener authenticates with.
+   Without it the listener cannot start, so nothing ever asks GitHub for jobs,
+   so every dispatched run queues until GitHub gives up on it.
+
+Neither can live in git: one is a container image, the other is a private key.
+That is the whole reason this is a manual section rather than something Argo does.
+
+### Where this actually stands — measured 2026-09-05, read this first
+
+Argo has already applied its half. What is missing is smaller than the length of
+this section suggests:
+
+| thing                                       | state                                    |
+| ------------------------------------------- | ---------------------------------------- |
+| `arc-systems` and `estate-front` namespaces | **exist**                                |
+| `deploy/arc-gha-rs-controller`              | **Running**, 1/1                         |
+| `AutoscalingRunnerSet/estate-front`         | **exists** — min 0, max 2, `STATE` empty |
+| Secret `estate-front/estate-runner-github`  | **MISSING — this is the blocker**        |
+| `ghcr.io/yadgarhq/estate-runner:0.1.0`      | **does not exist yet**                   |
+| runner pods in `estate-front`               | none, and correctly so                   |
+
+**Do step 2 before step 1.** They are written image-first, but the Secret is what
+unblocks registration, and it is testable on its own: create it, and an
+`AutoscalingListener` pod appears in `arc-systems`. The image is not needed until
+a job is actually dispatched to a runner, which cannot happen until the listener
+exists. Doing the Secret first turns one long change into two short ones that
+each prove themselves.
+
+**The symptom on the GitHub side, so it is recognisable.** Every `smoke` run
+queues for ever against `runs-on: estate-front` and is eventually auto-cancelled.
+Measured on 2026-09-05: 8 cancelled, 2 queued, **0 successful — the workflow has
+never once produced a verdict.** They arrive in batches of five (one
+`module-rolled` dispatch per module) and each batch leaves four cancelled and one
+stuck.
+
+**Four of five are cancelled DESPITE `cancel-in-progress: false`, and that is not
+a contradiction.** GitHub's concurrency allows one _running_ run plus one
+_pending_ run. `cancel-in-progress: false` protects the run that is IN PROGRESS;
+it says nothing about the pending one, and a newly arriving run always displaces
+whatever is pending. Because no run can start without a runner, there is never an
+in-progress run to protect, so each new dispatch cancels its predecessor. The
+comment above that setting in `smoke.yaml` — "Queue rather than cancel: a
+cancelled smoke run is a roll with no verdict" — describes an intent the missing
+runner defeats. **Fixing the runner fixes the cancellations**; there is nothing
+wrong with the concurrency block.
+
+**The controller's own error, so you can confirm the diagnosis rather than trust
+this table:**
+
+```bash
+kubectl -n arc-systems logs deploy/arc-gha-rs-controller --tail=300 | grep -i 'failed to resolve'
+# Failed to initialize Actions service client for creating a new runner scale set
+# failed to resolve app config: failed to get kubernetes secret
+```
+
+That message names the missing Secret and nothing else. When it stops appearing
+and an `AutoscalingListener` pod is Running in `arc-systems`, step 2 worked.
+
 `minRunners: 0`, so nothing is created until a job is queued. A cluster that has
 synced this and stopped there is not broken.
 
@@ -1238,17 +1325,68 @@ The installation id is not a secret and can be re-derived:
 gh api /orgs/yadgarhq/installations --jq '.installations[] | select(.app_id == 4814165) | .id'
 ```
 
+**"WHAT KEY, AND WHY NOT JUST USE THE APP?" — it IS the App.** A GitHub App has
+no password and no copyable token. It authenticates by signing a JWT with an RSA
+**private key** and exchanging that JWT for a short-lived installation token, so
+the private key IS the App credential; there is no App-without-a-key option. The
+three fields below are all App identity — `github_app_id` (which App),
+`github_app_installation_id` (which installation of it), `github_app_private_key`
+(the proof).
+
+ARC's `githubConfigSecret` accepts EITHER that App triple OR a single
+`github_token` holding a PAT. This estate chose the App, for the reason in
+`infra/estate-front-runner.yaml`: a PAT carries a person's whole access and
+outlives them. A short-lived token minted per poll from a key held by a pod that
+runs no workflow code is the narrower credential, which is also what makes
+ADR-0563 tolerable.
+
+**WHERE THE KEY IS: NOWHERE YOU CAN READ IT, so you will generate a new one.**
+An earlier revision of this section said to `op read` it from 1Password and left
+`<vault>/<item>` as a placeholder for the reader to fill in. There is nothing to
+fill in. Searched 2026-09-05 across all 897 items in every vault: **no item holds
+the `yadgarhq-bot` App private key.** The only copy is the organisation secret
+`RELEASE_APP_PRIVATE_KEY`, and GitHub Actions secrets are write-only — neither
+the API nor the web UI will show it back to you.
+
+That is not a problem, because **a GitHub App may hold several private keys at
+once**. Generating another does not invalidate the one the release flow uses.
+
+1. Go to <https://github.com/organizations/yadgarhq/settings/apps/yadgarhq-bot>
+   (App `yadgarhq-bot`, app_id `4814165`) — you must be an organisation owner.
+2. Scroll to **Private keys** → **Generate a private key**. The browser downloads
+   a `.pem` immediately; it is shown once and never again.
+3. Move it to a path you control and keep the permissions tight.
+
+**Then put it in 1Password, so the next person is not sent here again.** This is
+the step whose absence made this section unrunnable:
+
 ```bash
-# `<item>` is a placeholder: fill in whichever 1Password item holds the key the
-# release flow reads as RELEASE_APP_PRIVATE_KEY. Nothing here can know it.
-#
+op document create ./yadgarhq-bot.<date>.private-key.pem \
+  --title 'yadgar — yadgarhq-bot App private key' --vault Private
+```
+
+The existing `yadgar iam — encryption key` and `yadgar iam — blind index key`
+items are `DOCUMENT`-category entries in the `Private` vault; this follows them.
+Once it is stored, the command below becomes
+`op document get 'yadgar — yadgarhq-bot App private key' > ./yadgarhq-bot.pem`
+and no download is needed again.
+
+**If you would rather not add a key**, the alternative is to revoke and replace:
+generate a new one, update the `RELEASE_APP_PRIVATE_KEY` organisation secret with
+it, create the cluster Secret from it, and only then delete the old key from the
+App. Do it in that order — deleting first breaks every release in the estate
+until the secret is replaced.
+
+```bash
 # THE KEY GOES THROUGH A FILE, NOT argv AND NOT A PROCESS SUBSTITUTION. argv is
 # visible in `ps` and lands in shell history, so `--from-literal` is out; a
 # process substitution expands to `/dev/fd/63`, which `--from-file` handles
 # inconsistently across kubectl versions. A real file with `umask 077`, deleted
 # straight after, is the form that behaves the same everywhere.
 umask 077
-op read "op://<vault>/<item>/private-key" > ./yadgarhq-bot.pem
+# Either the freshly downloaded file, or — once it is stored as above —
+#   op document get 'yadgar — yadgarhq-bot App private key' > ./yadgarhq-bot.pem
+cp ~/Downloads/yadgarhq-bot.*.private-key.pem ./yadgarhq-bot.pem
 
 kubectl create namespace estate-front --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n estate-front create secret generic estate-runner-github \
