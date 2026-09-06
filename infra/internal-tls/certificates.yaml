@@ -1,10 +1,12 @@
 # One serving certificate per service, issued by the internal root beside this
 # file. THE CUT-OVER HAS HAPPENED, so read this as live material rather than as
 # material waiting for a lever. `tls.enabled: true` is set for all FIVE server
-# charts by `yadgarhq/argocd`, and every internal listener runs with
-# `LISTEN_TLS_ENABLED=1` — checked on the pods, not assumed from the manifest.
-# A change here reaches a serving hop. `project-db` is the fifth and was
-# onboarded last; this count read four until 2026-09-06.
+# charts by `yadgarhq/argocd`, and `LISTEN_TLS_ENABLED=1` reaches all five —
+# read off the Deployments, not assumed from the manifest. FOUR OF THE FIVE
+# LISTENERS ARE RUNNING ON IT. `project-db` is the fifth, was onboarded last,
+# and its pods refuse to boot until the leaf below is issued, which is what
+# this file's `project-db-tls` section is about. This count read four until
+# 2026-09-06. A change here reaches a serving hop.
 #
 # ── THE SAN IS THE SERVICE NAME, AND NOT AN IP ──────────────────────────────
 # A client verifies the certificate against THE HOST IT ASKED FOR, not the
@@ -99,9 +101,9 @@
 #
 # THE INVARIANT THIS SCHEDULE BUYS: at every renewal instant, at most one
 # service restarts. The closest two instants are 6h apart, against a 300-second
-# splay window — measured on 2026-09-06 across the eight live leaves, whose
-# `.status.renewalTime` values step by exactly 6h from 2026-11-02T18:40:52Z to
-# 2026-11-04T06:40:52Z, with the edge leaf a further 6h5m12s out.
+# splay window — measured on 2026-09-06 across the eight live leaves. SEVEN of
+# them step by exactly 6h, from 2026-11-02T18:40:52Z to 2026-11-04T06:40:52Z,
+# and the EIGHTH is the edge leaf, a further 6h5m12s out.
 #
 # THAT FIGURE READ 2h44m19s UNTIL 2026-09-06 AND WAS STALE RATHER THAN WRONG
 # WHEN WRITTEN: the certificates were re-issued on 2026-09-02 and the number did
@@ -190,10 +192,18 @@
 # the instant inherits the hour-modulo-six, the minute and the second OF
 # ISSUANCE rather than a position on this ladder.
 #
-# WHAT FOLLOWS IN PRACTICE. The eight live instants sit on an `HH:40:52` grid at
-# 6-hour spacing, so this leaf lands inside the 300-second splay window of one
-# of them only if it happens to be issued near that offset — roughly one chance
-# in seventy rather than a guarantee either way.
+# WHAT FOLLOWS IN PRACTICE. Seven of the eight live instants sit on an
+# `HH:40:52` grid at 6-hour spacing, so this leaf collides only if it is issued
+# near that one offset. The window is 600 seconds wide rather than 300, because
+# the new instant is too close on EITHER side of an existing one, so the chance
+# is 600/21600 — ROUGHLY ONE IN THIRTY-SIX, about 2.8%. Unlikely, and nothing
+# like impossible.
+#
+# THE EIGHTH INSTANT IS NOT A SECOND TARGET, which is what keeps the answer at
+# one in thirty-six rather than one in twenty-four. It belongs to the edge leaf
+# at `:46:04`, and Envoy Gateway reloads that one through xDS, so no pod
+# restarts on it and it cannot contribute to the multi-service event this ladder
+# exists to remove — ADR-0588's structural ground for holding it out.
 #
 # THE STEP IS STILL 768h. ADR-0588 requires the next free value, and a distinct
 # period is what keeps the separations growing once the first renewal has moved

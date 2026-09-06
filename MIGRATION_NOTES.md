@@ -456,9 +456,12 @@ its step, which is why this check is a step rather than a note.** The other
 eight leaves were issued in one bootstrap and share a `notAfter`, so a distinct
 `renewBefore` is a distinct instant. This one is minted on its own day:
 `2160h - 768h` is `1392h`, which is exactly 232 six-hour steps, so its instant
-inherits the hour-modulo-six, minute and second of ISSUANCE. The eight existing
-instants sit on an `HH:40:52` grid, so a collision is unlikely — roughly one
-chance in seventy — and it is not impossible.
+inherits the hour-modulo-six, minute and second of ISSUANCE. Seven of the eight
+existing instants sit on an `HH:40:52` grid at 6-hour spacing, and the window is
+600 seconds wide rather than 300 because the new instant is too close on EITHER
+side — so a collision is `600/21600`, ROUGHLY ONE IN THIRTY-SIX. Unlikely, and
+nothing like impossible. The eighth instant is the edge leaf, which Envoy
+Gateway reloads through xDS without restarting a pod, so it is not a target.
 
 **If it did collide,** do NOT retune `renewBefore` to dodge it: any alignment
 computed from today's `notAfter` dissolves at the first renewal. Delete the
