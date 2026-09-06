@@ -1077,8 +1077,10 @@ unaffected — it matches on address and port, and nothing in it names a host.
 
 `infra/arc.yaml`, `infra/estate-front-app.yaml` and `infra/estate-front-runner.yaml`
 declare actions-runner-controller and the scale set `yadgarhq/estate`'s
-`smoke.yaml` runs on. Argo applies all three. **Two things it cannot do are
-below, and until both are done a dispatched smoke run has no runner.**
+`smoke.yaml` runs on. Argo applies all three. **Two things it cannot carry are
+below. Neither is an operator step any longer — CI publishes the image and
+`make secrets` loads the credential — but both still need a person when the
+image digest moves.**
 
 ### What this is, in plain terms
 
@@ -1102,53 +1104,54 @@ that does this. The shape is:
   image, which registers itself with GitHub, executes the job, and is destroyed.
   `minRunners: 0`, so nothing exists between jobs and an idle cluster is correct.
 
-Hence two operator steps, and each maps to one of those bullets. Only the first
-is still manual — `make secrets` took the second:
+Hence two things Argo cannot carry, and each maps to one of those bullets. Both
+were operator steps once. Neither is now:
 
 1. **The runner image** is what the runner pod is made from. The stock
    `ghcr.io/actions/actions-runner` image has no Rust toolchain, and the smoke
    suite is a Rust test binary — so the estate builds its own with rustup baked
    in, rather than curl-piping a toolchain into a pod that holds the `estate`
-   environment's secrets at job time.
+   environment's secrets at job time. **CI builds and publishes it** (ADR-0579);
+   what a person still does is move the digest pin, which is §1.
 2. **The `estate-runner-github` Secret** is what the listener authenticates with.
    Without it the listener cannot start, so nothing ever asks GitHub for jobs,
-   so every dispatched run queues until GitHub gives up on it.
+   so every dispatched run queues until GitHub gives up on it. **`make secrets`
+   creates it** (ADR-0580).
 
 Neither can live in git: one is a container image, the other is a private key.
-That is the whole reason this is a manual section rather than something Argo does.
+That is why this section exists at all — not because either is done by hand.
 
-### Where this actually stands — measured 2026-09-05, read this first
+### Where this actually stands — measured 2026-09-06, read this first
 
-Argo has already applied its half. What is missing is smaller than the length of
-this section suggests:
+Argo has applied its half, `make secrets` takes the other, and CI builds the
+image. Nothing in this section is an operator step any more:
 
-| thing                                       | state                                    |
-| ------------------------------------------- | ---------------------------------------- |
-| `arc-systems` and `estate-front` namespaces | **exist**                                |
-| `deploy/arc-gha-rs-controller`              | **Running**, 1/1                         |
-| `AutoscalingRunnerSet/estate-front`         | **exists** — min 0, max 2, `STATE` empty |
-| Secret `estate-front/estate-runner-github`  | **`make secrets` creates it**            |
+| thing                                       | state                                                  |
+| ------------------------------------------- | ------------------------------------------------------ |
+| `arc-systems` and `estate-front` namespaces | **exist**                                              |
+| `deploy/arc-gha-rs-controller`              | **Running**, 1/1                                       |
+| `AutoscalingListener` for `estate-front`    | **Running** in `arc-systems`                           |
+| `AutoscalingRunnerSet/estate-front`         | **exists** — min 0, max 2                              |
+| Secret `estate-front/estate-runner-github`  | **`make secrets` creates it**                          |
+| `ghcr.io/yadgarhq/estate-runner`            | **published by CI** — `yadgarhq/actions`, see §1       |
+| runner pods in `estate-front`               | **created per job**, destroyed after — `minRunners: 0` |
 
-The pod row is the one that moves: with no Secret there are no runner pods, and
-that is correct. The moment the Secret lands, the listener claims whatever smoke
-run is still queued and creates a runner pod — which then blocks on the image
-step 1 has not built. A pod in `ImagePullBackOff` at that stage is progress, not
-a regression.
-| `ghcr.io/yadgarhq/estate-runner:0.1.0` | **does not exist yet** |
-| runner pods in `estate-front` | none, and correctly so |
+A cluster with no job in flight has no runner pod, and that is correct rather
+than a fault. The listener is the row to check when nothing happens: it holds the
+credential and does the asking, so without it every dispatched run queues in
+silence.
 
-**Do step 2 before step 1**, and step 2 is now just `make secrets`. The Secret is
-what unblocks registration and it is testable on its own: create it, and an
-`AutoscalingListener` pod appears in `arc-systems`. The image is not needed until
-a job is actually dispatched to a runner, which cannot happen until the listener
-exists.
+**Step 2 lands before step 1 matters.** The Secret is what unblocks registration
+and it is testable on its own: create it, and an `AutoscalingListener` pod
+appears in `arc-systems`. The image is not pulled until a job is actually
+dispatched to a runner, which cannot happen until the listener exists.
 
-**Only step 1 is still manual.** A container image cannot come out of a password
-manager, so it stays an operator step until it is built and pushed once.
-
-**The symptom on the GitHub side, so it is recognisable.** Every `smoke` run
-queues against `runs-on: estate-front` and is eventually cancelled. Measured
-2026-09-05: **0 successful — the workflow has never once produced a verdict.**
+**The symptom on the GitHub side, so it is recognisable.** While the credential
+was missing, every `smoke` run queued against `runs-on: estate-front` and was
+eventually cancelled — measured 2026-09-05: **0 successful.** That is the
+historical shape and it is kept because it is what the diagnosis below explains.
+It no longer describes today: measured 2026-09-06, `smoke` runs reach the runner
+and return verdicts, successes and failures both.
 
 **WHY SO MANY ARE CANCELLED DESPITE `cancel-in-progress: false`.** The obvious
 reading — that the setting is being ignored — is wrong, and so is the reading
@@ -1206,102 +1209,88 @@ kubectl -n arc-systems get pods   # an AutoscalingListener for estate-front, or 
 ```
 
 What that failure looks like exactly is not written down here, because seeing it
-means installing this and nobody has. Making the Degraded claim true would take
+now means BREAKING a working install: the listener is Running, measured
+2026-09-06. Making the Degraded claim true would take
 a `resource.customizations.health.actions.github.com_AutoscalingRunnerSet` entry
 in `argocd-cm` — which is `yadgarhq/argocd`'s object
 (`install/values.yaml`, `configs.cm`), not this repository's, so it is out of
 scope here rather than declined.
 
-### 1. Build and push the runner image
+### 1. Pin the digest CI published
 
-`infra/estate-front-runner.yaml` names `ghcr.io/yadgarhq/estate-runner:0.1.0`,
-which **does not exist yet**. The reasoning for a purpose-built image rather
-than a `rustup` step at job time is written on that file; the short version is
-that a `curl | sh` inside the pod holding the `estate` environment's secrets is
-the opposite of what D61 asks for everywhere else.
+**There is nothing to build by hand.** The Containerfile that used to sit in
+this section as a fenced code block now lives at
+`containers/estate-runner/Containerfile` in `yadgarhq/actions`, and
+`.github/workflows/estate-runner-image.yaml` builds it. ADR-0579: an image the
+estate depends on is built by CI, never by hand from a runbook. A Containerfile
+that lives only in documentation is not a build — and a hand-pushed image is one
+that passed no scan, carries no SBOM and holds no signature, which is the whole
+apparatus bypassed at the one place it protects the build itself.
 
-```Containerfile
-# Pin both halves. v2.337.0 was the current runner release on 2026-09-05;
-# 1.98.0 is `rust-toolchain.toml` in yadgarhq/estate.
-FROM ghcr.io/actions/actions-runner:2.337.0
+The push credential that used to be described here — a classic personal access
+token with `write:packages`, used from a workstation — is no longer needed for
+anything. The workflow authenticates with `GITHUB_TOKEN`. Do not mint one.
 
-USER root
-RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev ca-certificates curl \
- && rm -rf /var/lib/apt/lists/*
-USER runner
+The visibility flip that used to be step three here is **done** (ledger 661), and
+the workflow now re-verifies an anonymous pull on every run, so a package that
+goes private reddens a build rather than surfacing as an ImagePullBackOff nobody
+was told about.
 
-ENV RUSTUP_HOME=/home/runner/.rustup CARGO_HOME=/home/runner/.cargo
-ENV PATH=/home/runner/.cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain 1.98.0 --profile minimal --component rustfmt --component clippy
+**What a person still does, and it is one line.** The workflow's last step prints
+the pin into the run's step summary:
+
+```yaml
+image: ghcr.io/yadgarhq/estate-runner@sha256:<digest>
 ```
 
-**A push needs a credential, and it is NOT the App.** GHCR authenticates writes
-with `write:packages`, which the `yadgarhq-bot` App does not hold — there is no
-`packages` permission in the set measured under step 2 below. So this one step
-uses a classic personal access token with `write:packages`. That is a **push**
-credential used once from a workstation; it is not what the runner
-authenticates with, and nothing puts it in the cluster. Step 2's "not a PAT"
-applies to the runner's credential and is unaffected.
+Copy that line into `infra/estate-front-runner.yaml` and open a pull request.
+
+**Read the digest off the run, never off a tag.** `:latest` and the dated tag
+both move — the workflow promotes `:latest` onto each new build — so a tag names
+whatever was published most recently rather than the thing anybody reviewed. The
+digest is what cosign signed. Every pod in this estate reports `latest`
+somewhere; comparing tags proves nothing.
+
+**Bumping it is a deliberate edit, and that is the standing obligation.** The
+workflow rebuilds weekly on cron (`17 4 * * 1`), so a new digest exists most
+Mondays and none of them moves this repository. That is the same discipline as
+`image.digest` in `yadgarhq/argocd`'s `versions/<module>.yaml`: the pin moves
+when a person moves it. A cluster left unbumped keeps running the digest in git,
+which is correct rather than broken — it simply ages. One difference worth
+naming: those files carry a tag alongside the digest and this one does not. Here
+the digest is the whole pin, and nothing should add a tag back beside it.
+
+**How to check the roll landed, because Argo will not tell you.** Argo CD has no
+health check for `actions.github.com` kinds, so `Application/estate-front-runner`
+reports Synced and Healthy whether or not a runner ever comes up — a green status
+is not evidence here. What is evidence is the digest a runner pod actually
+resolved. Dispatch a smoke run, and while it holds a pod:
 
 ```bash
-echo "$GHCR_PAT" | podman login ghcr.io -u <your-github-username> --password-stdin
-
-podman build -t ghcr.io/yadgarhq/estate-runner:0.1.0 -f Containerfile .
-podman push ghcr.io/yadgarhq/estate-runner:0.1.0
+kubectl -n estate-front get pods \
+  -o jsonpath='{range .items[*]}{.status.containerStatuses[*].imageID}{"\n"}{end}'
 ```
 
-**Then make the package public — the pushed image is NOT pullable until you
-do.** A package created by a first push to GHCR is private, and no pull
-credential exists anywhere in this estate: `infra/estate-front-runner.yaml`
-declares no `imagePullSecrets`, on purpose. A pushed-but-private package is a
-runner pod in `ImagePullBackOff` with a **401** from the registry — which reads
-like a typo in the image reference rather than a visibility setting, and is not
-the not-found that a missing image gives.
+**Compare digests, never tags.** `.status.containerStatuses[].imageID` carries the
+resolved `@sha256:` and must equal the pin in
+`infra/estate-front-runner.yaml`. `.spec.containers[].image` only echoes what was
+requested, and every pod in this estate says `latest` somewhere.
 
-There is no REST endpoint for this. The packages API offers get, list, delete
-and restore only, so it is a settings page:
+`minRunners: 0`, so there is no pod between jobs and nothing to check on an idle
+cluster. That also means this change replaces no running pod when it syncs: the
+next job builds its runner from the new pin. The listener is a different object
+and does get replaced — the chart writes a `actions.github.com/values-hash`
+annotation over the whole values block, so changing the image line changes that
+hash (verified by rendering the chart before and after). Expect a new
+`AutoscalingListener` pod in `arc-systems`; a job in flight during the sync is
+the case to avoid.
 
-    https://github.com/orgs/yadgarhq/packages/container/estate-runner/settings
-    → Danger Zone → Change visibility → Public
-
-Public is what the other twelve container packages in this organisation already
-are (`gh api "/orgs/yadgarhq/packages?package_type=container"`, 2026-09-05: all
-twelve `public`), and the image carries nothing private — the upstream runner
-plus a rustup toolchain.
-
-The alternative, `imagePullSecrets` on the runner pod, was rendered rather than
-dismissed: the field IS in the `AutoscalingRunnerSet` CRD's pod-spec schema, so
-it survives into the pod. It is rejected because the `docker-registry` Secret it
-needs holds a classic PAT with `read:packages`, living in the cluster and
-outliving whoever minted it — the credential shape step 2 refuses, taken on for
-an image whose contents are public anyway.
-
-Verify it is pullable **anonymously**, which is what the kubelet will do:
-
-```bash
-TOKEN=$(curl -s "https://ghcr.io/token?scope=repository:yadgarhq/estate-runner:pull" \
-          | python3 -c 'import sys,json; print(json.load(sys.stdin)["token"])')
-curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
-  -H 'Accept: application/vnd.oci.image.index.v1+json' \
-  https://ghcr.io/v2/yadgarhq/estate-runner/manifests/0.1.0
-```
-
-`200` is done. `403` is the package still private — that is exactly what this
-command returns for `estate-runner` today, and `200` is what it returns for the
-already-public `yadgarhq/rust-build` (both run 2026-09-05, which is how this
-check is known to discriminate).
-
-Then read the digest and **open a pull request pinning it** —
-`image: ghcr.io/yadgarhq/estate-runner:0.1.0@sha256:...`. A tag is what this
-repository ships today because the image does not exist to be pinned; it is not
-what it should keep shipping.
-
-**GitHub deprecates old runner binaries.** A runner far enough behind is refused
-at registration, so this image is rebuilt when the upstream runner is bumped.
-That is the standing cost of choosing an image over a job step, and it is
-stated rather than discovered.
+**The weekly rebuild does not bump the runner binary.** GitHub deprecates old
+runner binaries and refuses registration for one far enough behind, so this
+still has to be watched. The Containerfile's `FROM` is digest-pinned, which means
+the cron refreshes the apt and rustup layers and leaves the runner version where
+it is. Moving it is an edit to that `FROM` digest in `yadgarhq/actions`, then a
+bump of the pin here. Two repositories, both reviewed — which is the point.
 
 ### 2. Create the `estate-runner-github` Secret — **`make secrets` does this now**
 
@@ -1562,20 +1551,24 @@ reason this order is written down rather than discovered.
 
 ### What none of this proves
 
-The runner has never registered and no job has ever landed on it, because
-proving either means installing. The NetworkPolicy in `infra/estate-front/` is
-accepted by the API server and evaluated by nothing — kindnet implements no
-NetworkPolicy — so the confinement is a specification, not a control. That gap
-is `yadgarhq/docs` ledger 614, due 2026-10-03, and it belongs to the nix repo.
+The runner registers and jobs land on it — both observed 2026-09-06, and an
+earlier revision of this paragraph denied both. The NetworkPolicy in
+`infra/estate-front/` is accepted by the API server and evaluated by nothing —
+kindnet implements no NetworkPolicy — so the confinement is a specification, not
+a control. That gap is `yadgarhq/docs` ledger 614, due 2026-10-03, and it belongs
+to the nix repo.
 
-Two more things here are reasoned rather than observed, and are named so nobody
-takes them for measurements. The teardown order is read off the rendered
-finalizers; watching it go wrong means deleting a controller. And the image
-steps are unexercised, because no `ghcr.io/yadgarhq/estate-runner` package
-exists — `gh api "/orgs/yadgarhq/packages?package_type=container"` lists twelve
-on 2026-09-05 and not this one. The visibility page and the digest pin are
-written from the packages API's documented surface, which carries no visibility
-endpoint, and from how those twelve already behave.
+Two things here are reasoned rather than observed, and are named so nobody takes
+them for measurements. The teardown order is read off the rendered finalizers;
+watching it go wrong means deleting a controller. And **nothing here has
+observed a runner pod come up on the digest this repository now pins.** The pod
+measured on 2026-09-06 resolved
+`sha256:0d20f8ff5940906a99511934e572b0c64fea8cf6eec14809164ea59f7e12de07` — the
+hand-built image the pin replaces — because the pin had not been applied yet.
+What is verified about the new digest is that it is what CI published, scanned,
+asserted and signed, and that it survives templating into the
+`AutoscalingRunnerSet`. That it runs a smoke suite successfully is the next
+dispatched run's job to show, by the `imageID` check in §1.
 
 ---
 
