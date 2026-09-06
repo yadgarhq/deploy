@@ -1673,3 +1673,88 @@ back through `main`'s `Result` and is printed as `Error: <the sentence above>`.
 working as designed — the mounted file is in the watch set, a changed digest ends
 the serve, and the pod drains and comes back on the new value. Do not read that
 roll as a fault.
+
+## Make the runner signature check required (ledger 742)
+
+`.github/workflows/ci.yaml` gained a `signature` job. It runs
+`scripts/runner_image_pinned.py --verify-signature`, which asks cosign whether
+the digest in `infra/estate-front-runner.yaml` carries a signature by the
+workflow identity that publishes it. **That job blocks nothing until this step
+is taken**, and saying so is the point of this section: the `main` ruleset
+requires exactly one status check, `ci / passed`, and this job is not inside it.
+A red cross beside a mergeable pull request is a check people learn to ignore.
+
+The structural half — is the reference a digest at all — is already required: it
+is the `runner-image-pinned` pre-commit hook, and `ci / passed` runs every hook
+in `.pre-commit-config.yaml`. Nothing below is needed for that half.
+
+```bash
+# READ FIRST. The API replaces the whole `rules` array, so the payload below has
+# to match what is there. This is what it was on 2026-09-06.
+gh api repos/yadgarhq/deploy/rulesets/21845322 --jq '.rules[] | select(.type=="required_status_checks")'
+
+# THEN, as a repository admin. Adding one context to the existing list.
+gh api --method PUT repos/yadgarhq/deploy/rulesets/21845322 \
+  --input - <<'JSON'
+{
+  "name": "main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "required_linear_history" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": true,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "dismissal_restriction": { "enabled": false, "allowed_actors": [] },
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": true,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "ci / passed" },
+          { "context": "signature" }
+        ]
+      }
+    }
+  ]
+}
+JSON
+```
+
+`signature`, not `ci / signature`. The two-part form belongs to a job that calls
+a reusable workflow — `ci / passed` is `<caller job id> / <called job id>` — and
+this job runs its own steps, so its check context is the job id alone. A context
+that names no real check is not an error: the ruleset simply waits for a check
+that never arrives and every pull request stays blocked, which reads like an
+outage rather than a typo.
+
+### What the check refuses, and what it cannot
+
+It refuses a digest with no cosign signature by
+`https://github.com/yadgarhq/actions/.github/workflows/estate-runner-image.yaml@refs/heads/main`
+at `https://token.actions.githubusercontent.com`. That identity was read off the
+live signing certificate rather than inferred from the workflow file. **A
+rename of that workflow file, or a move of the runner build to another
+repository, changes the identity and reddens this job** — the fix is to edit
+`COSIGN_IDENTITY` in the script, deliberately, which is the behaviour wanted
+from an exact identity rather than a regexp.
+
+It cannot tell you the pin is the NEWEST published digest, and that is on
+purpose. `estate-runner` is rebuilt every Monday, so "newest" moves with no
+commit here; a freshness rule would redden weekly naming nobody's change.
+Bumping the pin stays the deliberate two-repository edit the ledger 610 section
+above describes.

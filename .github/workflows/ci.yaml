@@ -70,3 +70,52 @@ jobs:
       contents: read
       packages: write
       id-token: write
+
+  # THE SIGNATURE HALF OF THE RUNNER PIN GATE (ledger 742), AND THE ONLY JOB IN
+  # THIS FILE THAT IS NOT SHARED. `scripts/runner_image_pinned.py` runs as a
+  # pre-commit hook and checks the SHAPE of the pin offline; asking whether the
+  # digest carries a signature needs cosign and the registry, which no hook may
+  # depend on. Same script, second mode, so the two halves cannot disagree about
+  # which references are the subject.
+  #
+  # IT IS NOT A MERGE GATE YET, AND THAT HAS TO BE SAID RATHER THAN IMPLIED. The
+  # `main` ruleset requires exactly one status check, `ci / passed`, which is the
+  # shared workflow's own aggregate — this job is not inside it and is not named
+  # by the ruleset, so a red cross here blocks nothing. MIGRATION_NOTES.md
+  # carries the one change that would make it required; it is the operator's to
+  # make. This is the same trap `yadgarhq/argocd`'s `versions_pinned.py` header
+  # names when it explains why that check is a hook and not a workflow of its
+  # own, and it is why the STRUCTURAL half went to the hook rather than here.
+  #
+  # PULL REQUESTS ONLY. On `push` to main it would re-ask, against merged code,
+  # a question the pull request just answered.
+  signature:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: install PyYAML
+        run: python3 -m pip install --disable-pip-version-check "pyyaml==6.0.3"
+
+      # THE SAME PIN THE PUBLISHING WORKFLOW USES. `yadgarhq/actions`'s
+      # `estate-runner image` workflow signs with this action at this digest;
+      # verifying with a different cosign major is a question nobody asked.
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # NO REGISTRY CREDENTIAL, DELIBERATELY, and it matches how the pod pulls.
+      # `infra/estate-front-runner.yaml` carries no `imagePullSecrets` and the
+      # package is public (ledger 661), so an anonymous verify asks the same
+      # question the kubelet asks. A verify that only works when authenticated
+      # would stay green through a visibility flip that the cluster experiences
+      # as ImagePullBackOff.
+      - name: the pinned digest carries CI's signature
+        run: python3 scripts/runner_image_pinned.py --verify-signature
