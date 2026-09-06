@@ -1,0 +1,101 @@
+# The project registry's database instance (D58: one instance per module).
+#
+# WRITTEN BEFORE THE MODULE DEPLOYS, and it is the FIRST of three steps rather
+# than one of three in any order. `project-db` is fully built — its seven RPCs
+# are implemented and it carries a `chart/` — and it has never run in this
+# cluster. Measured 2026-09-06: the repository has 0 tags, `yadgarhq/argocd` has
+# no `versions/project-db.yaml`, and the repository carries no topics at all.
+#
+# THE OTHER TWO STEPS DEPEND ON THIS ONE. The ApplicationSet in
+# `yadgarhq/argocd` selects on `pathsExist: [chart]` AND the `yadgar-deployable`
+# topic, so adding that topic is what schedules the pods. Adding it today would
+# schedule a pod that crash-loops against a database that does not exist:
+# `chart/values.yaml` names `database.host: project-db-mariadb`, and until this
+# resource is reconciled nothing answers to that name and no
+# `project-db-password` Secret exists to mount. The order is database, then
+# release, then topic.
+#
+# NO PASSWORD IN GIT, AND NO NEW HUMAN-OWNED SECRET EITHER. `generate: true` has
+# the operator mint both credentials on first reconcile if they are absent, so
+# they are created in-cluster and never pass through a commit (ADR-0517). That
+# places `project-db-password` in the auto-generated category, alongside every
+# other database credential in this directory. It is NOT a fourth secret for
+# `make secrets` to load: the three that target loads from 1Password are
+# `yadgar-dev-ca`, `iam-keys` and `estate-runner-github`, and this file adds
+# nothing to that list. Stated rather than left to be inferred, because the
+# count of human-owned secrets has been undercounted before.
+#
+# THE NAMES ARE A CONTRACT WITH THE CONSUMER, and every one below is read from
+# `project-db` itself rather than copied from a sibling:
+#
+#   - `chart/values.yaml` reads `database.host: project-db-mariadb`,
+#     `name: project`, `user: project`, `passwordSecret: project-db-password`.
+#   - `chart/templates/deployment.yaml` projects that whole Secret — no `items:`
+#     remap — at `mountPath: /var/run/secrets/project-db`.
+#   - `src/main.rs` defaults `DB_PASSWORD_FILE` to
+#     `/var/run/secrets/project-db/password`.
+#
+# So the metadata name, the database, the username and the Secret's KEY all have
+# to match what is below. A wrong key mounts a Secret whose file the service
+# cannot find, which surfaces as a connection error rather than as a missing
+# file.
+#
+# NO `tls:` BLOCK, AND THAT IS A DELIBERATE MATCH RATHER THAN AN OVERSIGHT.
+# Neither `iam-db.yaml` nor `task-db.yaml` carries one, and neither passes
+# `--ssl` or `--require-secure-transport`, so all three engines accept an
+# unencrypted connection. `project-db`'s chart defaults `database.sslMode` to
+# `required`, which encrypts and verifies no certificate. The client half of the
+# fix is already here — `src/boot.rs` reads `DB_SSL_CA_FILE` and the module pins
+# `yadgar-store` v0.2.0 — and the engine half is not. That gap is one open item
+# covering all three instances together, and a third resource that differed here
+# would make it harder to close rather than easier: it would turn one uniform
+# change into two, and leave the two older engines looking deliberate.
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: MariaDB
+metadata:
+  name: project-db-mariadb
+  namespace: yadgar
+spec:
+  # 11.8 or newer is REQUIRED, not preferred: D69's capability probe runs
+  # VEC_DISTANCE_EUCLIDEAN over VEC_FromText at boot and fails the pod when the
+  # engine cannot answer it. An older image starts and then refuses to serve,
+  # which is the loud failure D69 wants — but pinning avoids it entirely.
+  # `project-db` reaches that probe through `yadgar-store` v0.2.0, the same
+  # crate the other two modules use, so the requirement is the same one.
+  image: mariadb:11.8.8
+
+  rootPasswordSecretKeyRef:
+    name: project-db-mariadb-root
+    key: password
+    generate: true
+
+  # Bootstrap: the database, the user and the grant the module needs.
+  database: project
+  username: project
+  passwordSecretKeyRef:
+    name: project-db-password
+    key: password
+    generate: true
+
+  # ONE replica. More than one MariaDB replica means Galera, which is a different
+  # topology with its own failure modes, and D55 asks for an environment that is
+  # prod-like in the ways that expose defects rather than in every way. The
+  # invariant about two replicas is about the SERVICES: it exists so client-side
+  # balancing and the migration race are reachable, and `project-db`'s own
+  # `replicaCount: 2` exercises both against this one engine.
+  replicas: 1
+
+  storage:
+    size: 1Gi
+    # kind's bundled local-path-provisioner. Named rather than left to the
+    # cluster default so the manifest says what it binds to.
+    storageClassName: standard
+
+  # Development sizing (D55). The ceiling on this machine is the number of
+  # database instances, which is why each one is kept small — this is the third.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
