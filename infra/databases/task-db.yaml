@@ -36,6 +36,50 @@ spec:
   # which is the loud failure D69 wants — but pinning avoids it entirely.
   image: mariadb:11.8.8
 
+  # TLS IS ENFORCED HERE, AND `enabled` IS WRITTEN OUT EVEN THOUGH IT IS ALREADY
+  # THE DEFAULT.
+  #
+  # THIS ENGINE ALREADY SERVED TLS BEFORE THIS BLOCK EXISTED, and the silence in
+  # these files is what hid that. mariadb-operator defaults `tls.enabled` to
+  # true, so the stored spec read `{"enabled":true}` on a cluster whose manifest
+  # said nothing at all. Measured 2026-09-06 against the live instance: the
+  # operator had minted a per-instance CA, written `1-tls.cnf` with `ssl_cert`,
+  # `ssl_key`, `ssl_ca` and `tls_version = TLSv1.3`, and issued a server leaf
+  # for `CN=task-db-mariadb.yadgar.svc.cluster.local`. So reading an
+  # absent `tls:` block as "no TLS" was half right, and the missing half
+  # was ENFORCEMENT rather than encryption. Writing the defaulted value out
+  # closes that whole class: a file that states its posture cannot be misread by
+  # the next person who greps for `tls:` and finds nothing.
+  #
+  # `required: true` IS THE ONLY LINE THAT CHANGES BEHAVIOUR. It sets
+  # `require_secure_transport = ON`, so an unencrypted connection over TCP is
+  # REFUSED rather than accepted — the same line that was `false` in the
+  # operator's generated `1-tls.cnf` until now. Nothing in the estate loses by
+  # it: all three `-db` charts default `database.sslMode: required`, so every
+  # module already negotiates TLS, and `yadgarhq/argocd` overrides none of it —
+  # its `versions/*.yaml` files carry an image digest and a tag and nothing
+  # else.
+  #
+  # THE HEALTH PROBES ARE UNAFFECTED, and that is a property of the control
+  # rather than luck. `require_secure_transport` exempts unix-socket
+  # connections, and the liveness, readiness and startup probes all run
+  # `mariadb -u root -e "SELECT 1;"` with NO `-h`, so they reach the socket.
+  # The same exemption means `kubectl exec` into this pod is NOT a test of this
+  # control — a local client is exempt from it. The refusal that proves it has
+  # to come over TCP from another pod.
+  #
+  # NO CLIENT-CERTIFICATE REQUIREMENT, AND THE ORDER IS FORCED. Requiring one is
+  # expressible — `User.spec.require.x509` on the operator's own CRD — but the
+  # `User` here is created by the operator from the `username:` field below and
+  # is owned by this resource, and `yadgar-store` v0.2.0 carries `ssl_mode` and
+  # `ssl_ca` on `PoolConfig` and NO client key or certificate. An engine that
+  # demanded a certificate today would refuse every module that reaches it. The
+  # engine must not require what the client cannot present, so that half waits
+  # on the store crate.
+  tls:
+    enabled: true
+    required: true
+
   rootPasswordSecretKeyRef:
     name: task-db-mariadb-root
     key: password
