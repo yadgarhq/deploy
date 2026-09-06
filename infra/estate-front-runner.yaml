@@ -271,7 +271,7 @@ spec:
                 # `yadgarhq/actions`, followed by a bump of the pin below — a
                 # standing obligation, not a one-off, and it is paid in two
                 # repositories rather than at a workstation.
-                image: ghcr.io/yadgarhq/estate-runner@sha256:0d20f8ff5940906a99511934e572b0c64fea8cf6eec14809164ea59f7e12de07
+                image: ghcr.io/yadgarhq/estate-runner@sha256:52bb30bba06518f01c7bf862d5a3765090de0fe6b150b7c464aa9e355e4afd0b
                 command: ["/home/runner/run.sh"]
                 # Development sizing (D55). `cargo build` of the suite is the
                 # peak; the limit is memory only, because a CPU limit would make
