@@ -336,6 +336,160 @@ age.
 
 ---
 
+## Issue `project-db` its serving certificate (ledger 641)
+
+**`project-db` is deployed and crash-looping because no certificate authority
+was ever told to issue it one.** Both pods refuse to boot with:
+
+```
+the TLS certificate at /var/run/config/serving-cert/tls.crt could not be read:
+No such file or directory (os error 2). TLS was asked for, so this module
+refuses to start rather than serving in cleartext.
+```
+
+That refusal is the module's fail-closed guard working exactly as designed. The
+image pin is correct and the chart is correct. What is missing is the Secret:
+`yadgarhq/argocd` sets `tls.enabled: true` for every module chart, the chart
+therefore mounts a volume for `tls.certSecret`, whose default is
+`project-db-tls`, and `optional: true` turns the absent Secret into an empty
+directory rather than a `FailedMount` — so the binary reports the path instead
+of kubelet reporting the volume. `infra/internal-tls/certificates.yaml` declared
+`iam-tls`, `iam-db-tls`, `task-tls` and `task-db-tls` and no `project-db-tls`,
+because the other four modules were onboarded before `project-db` existed.
+
+**This is a GitOps change and Argo applies it.** `infra/internal-tls/` is synced
+by the `deploy` Application, so merging the new `Certificate` is the whole of
+the fix. The steps below CHECK it; only the last one is optional and only
+because it shortens a wait.
+
+### 1. Watch the certificate get issued
+
+```bash
+kubectl -n yadgar get certificate project-db-tls -w
+# READY=True, normally within seconds of the sync
+```
+
+If it does not go Ready, read the reason rather than re-applying:
+
+```bash
+kubectl -n yadgar describe certificate project-db-tls
+kubectl -n yadgar get certificaterequest | grep project-db
+```
+
+### 2. Confirm the Secret carries the three keys the two sides read
+
+```bash
+kubectl -n yadgar get secret project-db-tls \
+  -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
+# ca.crt
+# tls.crt
+# tls.key
+```
+
+The pod selects `tls.crt` and `tls.key` and never `ca.crt`; a future CALLER of
+`project-db` selects `ca.crt` out of this same Secret. Do not print the values.
+
+### 3. Confirm the SANs are the Service name and no IP
+
+```bash
+kubectl -n yadgar get secret project-db-tls -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -text \
+  | grep -A1 'Subject Alternative Name'
+# DNS:project-db, DNS:project-db.yadgar, DNS:project-db.yadgar.svc,
+# DNS:project-db.yadgar.svc.cluster.local
+```
+
+```bash
+kubectl -n yadgar get secret project-db-tls -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -text | grep -A1 'Extended Key Usage'
+# TLS Web Server Authentication   <- and NOT TLS Web Client Authentication
+```
+
+**The second command is the one worth running even when the pods come up.** One
+authority signs both the serving and the client leaves in this namespace, and
+the extended key usage is the only thing keeping the two directions apart. A
+leaf naming both, or naming neither, is accepted by every server here and by
+every client.
+
+### 4. Confirm the pods go Ready, and that they are serving TLS
+
+The pods are in `CrashLoopBackOff`, so kubelet picks the Secret up on its next
+restart with no action from you — up to about five minutes of backoff. A rollout
+restart only makes it prompt:
+
+```bash
+kubectl -n yadgar rollout restart deployment/project-db      # optional
+kubectl -n yadgar rollout status deployment/project-db --timeout=300s
+kubectl -n yadgar get pods -l app=project-db
+# 2 pods, 1/1 Running
+```
+
+```bash
+kubectl -n yadgar logs deployment/project-db | grep listening
+# "project-db listening" with tls=true and a non-zero watching count
+```
+
+**Check the `tls` field rather than the restart count.** `tls=false` would mean
+the flag never reached the binary, and a MISSING `tls` field would mean the
+image predates the feature — different faults with different fixes (D81). A
+non-zero `watching` is what says the rotation watcher of ADR-0523 holds this
+certificate, so a renewal 58 days from now actually reaches the process.
+
+### 5. Confirm the renewal instant did not collide — THIS ONE IS NOT OPTIONAL
+
+```bash
+kubectl -n yadgar get certificate \
+  -o custom-columns='NAME:.metadata.name,RENEWAL:.status.renewalTime' \
+  --sort-by=.status.renewalTime
+```
+
+**Every pair of adjacent renewal instants must be more than 300 seconds apart.**
+That is the invariant the `renewBefore` ladder in
+`infra/internal-tls/certificates.yaml` exists to buy: each service's pods draw a
+rotation splay from `[0, 300)` independently, so two services sharing an instant
+put all of their pods through a restart inside one five-minute window, and a
+PodDisruptionBudget cannot hold that because a pod that exits 0 was never
+evicted.
+
+**`project-db-tls` is the first leaf that cannot inherit that separation from
+its step, which is why this check is a step rather than a note.** The other
+eight leaves were issued in one bootstrap and share a `notAfter`, so a distinct
+`renewBefore` is a distinct instant. This one is minted on its own day:
+`2160h - 768h` is `1392h`, which is exactly 232 six-hour steps, so its instant
+inherits the hour-modulo-six, minute and second of ISSUANCE. Seven of the eight
+existing instants sit on an `HH:40:52` grid at 6-hour spacing, and the window is
+600 seconds wide rather than 300 because the new instant is too close on EITHER
+side — so a collision is `600/21600`, ROUGHLY ONE IN THIRTY-SIX. Unlikely, and
+nothing like impossible. The eighth instant is the edge leaf, which Envoy
+Gateway reloads through xDS without restarting a pod, so it is not a target.
+
+**If it did collide,** do NOT retune `renewBefore` to dodge it: any alignment
+computed from today's `notAfter` dissolves at the first renewal. Delete the
+Secret and let cert-manager re-issue at a different second instead:
+
+```bash
+kubectl -n yadgar delete secret project-db-tls
+# cert-manager re-issues within a reconcile; then re-run the command above
+```
+
+That re-issues the leaf and rolls the two `project-db` pods a second time. It
+touches no other service.
+
+### What this deliberately does NOT add
+
+**No client certificate for `project-db`.** `client-certificates.yaml` issues
+one leaf per CALLER, and a `-db` module answers without calling —
+`iam-db` and `task-db` have none either. Nothing in the estate dials
+`project-db` over gRPC yet. Its one outbound connection is to its own MariaDB
+engine, which is encrypted by `require_secure_transport` and authenticated by
+the generated `project-db-password`, with `database.sslMode: required` checking
+no certificate in either direction. The `project-db-mariadb-client-cert` Secret
+in this namespace belongs to the MariaDB operator's own per-instance CA and is
+unrelated to `yadgar-internal-ca`. When the `project` module is written and
+dials `project-db`, THAT caller needs a leaf — `project-db` still will not.
+
+---
+
 ## The development TLS edge (ledger 454)
 
 Establishes HTTPS in front of the gateway so an MCP client on this machine
