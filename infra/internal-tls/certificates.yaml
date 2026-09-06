@@ -1,16 +1,24 @@
 # One serving certificate per service, issued by the internal root beside this
 # file. THE CUT-OVER HAS HAPPENED, so read this as live material rather than as
-# material waiting for a lever. `tls.enabled: true` is set for all four server
+# material waiting for a lever. `tls.enabled: true` is set for all FIVE server
 # charts by `yadgarhq/argocd`, and every internal listener runs with
 # `LISTEN_TLS_ENABLED=1` — checked on the pods, not assumed from the manifest.
+# `project-db` is the fifth and it was onboarded last; the count was four until
+# 2026-09-06.
 # A change here reaches a serving hop.
 #
 # ── THE SAN IS THE SERVICE NAME, AND NOT AN IP ──────────────────────────────
 # A client verifies the certificate against THE HOST IT ASKED FOR, not the
 # address it reached: `dial` sets `ClientTlsConfig::domain_name` from the
 # configured host, which is the in-cluster Service name — `iam`, `iam-db`,
-# `task`, `task-db`. That is what makes ONE certificate work across every pod
-# behind a headless Service, which three of these four are.
+# `task`, `task-db`, `project-db`. That is what makes ONE certificate work
+# across every pod behind a headless Service, which ALL FIVE of these are.
+#
+# THE COUNT IN THAT SENTENCE READ "three of these four" UNTIL 2026-09-06 AND
+# WAS ALREADY WRONG. `kubectl get svc -n yadgar` reads `clusterIP: None` for
+# `iam`, `iam-db`, `task` and `task-db` alike, so the exception it implied does
+# not exist. It is corrected here rather than extended, because adding a fifth
+# name to a wrong count would have made it look measured.
 #
 # So there are NO IP SANs here and nothing may start relying on one. This
 # estate has already paid for that lesson once: the development root CA excludes
@@ -42,9 +50,15 @@
 # window, never its expiry — such a pod must restart within 90 days of its
 # certificate being issued, or it serves an expired one.
 #
-# THAT RESIDUAL IS CLOSED FOR ALL FIVE PROCESSES, and TLS is on now, so it no
-# longer blocks nothing. Every service carries the rotation watcher of ADR-0523
-# — visible as `TLS_ROTATION_POLL_SECS` on their pods. It notices the rewrite,
+# THAT RESIDUAL IS CLOSED FOR ALL SIX PROCESSES, and TLS is on now, so it no
+# longer blocks nothing. Every service carries the rotation watcher of ADR-0523,
+# `project-db` included — `src/rotate.rs` is in its tree and its boot line
+# reports a `watching` count. THE POLL AND THE SPLAY ARE NOT ON THE POD. This
+# paragraph named `TLS_ROTATION_POLL_SECS` until 2026-09-06 and
+# `grep -rn TLS_ROTATION` over all six module charts now returns nothing: both
+# knobs are read from `yadgarhq/config`'s `shared` ConfigMap, mounted as a
+# directory, with no compiled-in default behind either (ADR-0569, ADR-0570).
+# The watcher notices the rewrite,
 # waits out a splay, drains and exits 0, and the pod comes back on the new
 # material.
 #
@@ -86,8 +100,16 @@
 # that exits 0 of its own accord was never evicted.
 #
 # THE INVARIANT THIS SCHEDULE BUYS: at every renewal instant, at most one
-# service restarts. The closest two instants are 2h44m19s apart, against a
-# 300-second splay window.
+# service restarts. The closest two instants are 6h apart, against a 300-second
+# splay window — measured on 2026-09-06 across the eight live leaves, whose
+# `.status.renewalTime` values step by exactly 6h from 2026-11-02T18:40:52Z to
+# 2026-11-04T06:40:52Z, with the edge leaf a further 6h5m12s out.
+#
+# THAT FIGURE READ 2h44m19s UNTIL 2026-09-06 AND WAS STALE RATHER THAN WRONG
+# WHEN WRITTEN: the certificates were re-issued on 2026-09-02 and the number did
+# not follow them. It is corrected rather than deleted because the margin is the
+# reason the splay window is safe, and a reader checking the claim against the
+# cluster has to be able to reach the same number.
 #
 # ── WHY `renewBefore` AND NOT `duration` ────────────────────────────────────
 # The argument is stronger than "the expiry does not move". `duration` is part
@@ -98,22 +120,35 @@
 #
 # ── WHY A 6-HOUR LADDER, AND WHY IT CANNOT RE-LOCK ──────────────────────────
 # `renewalTime = notAfter - renewBefore`, exactly — checked against all nine
-# live rows, with no jitter of any kind. So a distinct `renewBefore` is a
-# distinct instant AND a distinct period: a leaf renews every
-# `duration - renewBefore`, which is 1434h at the near end of this ladder and
-# 1398h at the far one.
+# live rows again on 2026-09-06, with no jitter of any kind.
+#
+# NINE IS THE SIZE OF A MEASUREMENT AND NOT THE COUNT OF LEAVES THIS DIRECTORY
+# DECLARES, and the difference is the whole reason this number is left alone.
+# `project-db-tls` below is the TENTH Certificate in this repository and it has
+# never been issued, so no row of it has been read and this sentence claims
+# nothing about it. Confirming it once it is issued is a step in
+# `MIGRATION_NOTES.md`, and the number here moves when that step has been run.
+#
+# So a distinct `renewBefore` is a distinct instant AND a distinct period: a
+# leaf renews every `duration - renewBefore`, which is 1434h at the near end of
+# this ladder and 1392h at the far one.
 #
 # THE SEPARATIONS THEREFORE GROW RATHER THAN DRIFTING BACK TOGETHER, which is
 # the property that makes this durable rather than a one-off nudge. Among
 # leaves sharing a `notAfter`, the one that renews EARLIER has the LARGER
 # `renewBefore` and so the SHORTER period, and moves earlier still on every
-# cycle. Across the two `notAfter` groups the offset is 2h44m19s, which is not
-# a multiple of the 6-hour step, so no number of cycles brings such a pair onto
-# the same instant either. The margin is hours and cert-manager reconciles
+# cycle. Across the two `notAfter` groups the offset is 5m12s — the edge leaf
+# expires at 2026-12-04T12:46:04Z and the seven internal ones at
+# 2026-12-04T12:40:52Z — which is not a multiple of the 6-hour step, so no
+# number of cycles brings such a pair onto the same instant either. That offset
+# was also recorded as 2h44m19s and is corrected on the same measurement. The margin is hours and cert-manager reconciles
 # within minutes, so the algebra does not need to be exact to hold.
 #
-# A NEW CERTIFICATE TAKES THE NEXT STEP — 768h, then 774h. Never a value that
-# is already in use.
+# A NEW CERTIFICATE TAKES THE NEXT STEP. `project-db-tls` below took 768h on
+# 2026-09-06, so THE NEXT FREE STEP IS 774h, then 780h. Never a value that is
+# already in use. ADR-0588 makes that unconditional: a leaf under this directory
+# takes its step when it is CREATED, whether or not any process watches its
+# Secret yet.
 #
 # ── 720h IS DELIBERATELY UNUSED HERE ────────────────────────────────────────
 # It belongs to the EDGE leaf, `infra/tls/certificate.yaml`, which is left
@@ -141,6 +176,63 @@
 # from source on each repository's main. They were scheduled here before that
 # landed so the schedule was already correct on the day the watcher came
 # back — which is exactly what has now happened.
+#
+# ── `project-db-tls` IS THE FIRST LEAF ADDED AFTER THE BOOTSTRAP, AND ITS STEP
+# DOES NOT SET ITS INSTANT ──────────────────────────────────────────────────
+# READ THIS BEFORE ADDING THE NEXT ONE, because the ladder above does not work
+# the same way for a leaf minted on its own day.
+#
+# The bootstrap leaves SHARE a `notAfter`, which is what makes a distinct
+# `renewBefore` a distinct instant and makes the arithmetic above the whole
+# story. `project-db` was onboarded afterwards — its module did not exist when
+# the other four were written — so cert-manager mints this leaf whenever it
+# first reconciles and `notAfter` is that moment plus 2160h. Its renewal instant
+# is therefore `issuance + 1392h`, and 1392h is 232 six-hour steps EXACTLY, so
+# the instant inherits the hour-modulo-six, the minute and the second OF
+# ISSUANCE rather than a position on this ladder.
+#
+# WHAT FOLLOWS IN PRACTICE. The eight live instants sit on an `HH:40:52` grid at
+# 6-hour spacing, so this leaf lands inside the 300-second splay window of one
+# of them only if it happens to be issued near that offset — roughly one chance
+# in seventy rather than a guarantee either way.
+#
+# THE STEP IS STILL 768h. ADR-0588 requires the next free value, and a distinct
+# period is what keeps the separations growing once the first renewal has moved
+# this leaf's `notAfter`. What the step no longer buys ON ITS OWN is the
+# separation itself, and saying so is the point of this section.
+#
+# SO THE SEPARATION IS MEASURED AFTER ISSUANCE RATHER THAN ASSUMED FROM THIS
+# FILE. `MIGRATION_NOTES.md` carries the command and the threshold, and the
+# check belongs to whoever applies this. DO NOT HAND-PICK A `renewBefore` HERE
+# TO ENGINEER A GAP: any alignment computed from today's `notAfter` dissolves on
+# the first renewal, which is the same argument the section on a service's two
+# certificates makes above.
+#
+# ── project-db GETS NO CLIENT LEAF, AND THAT IS THE `-db` RULE RATHER THAN AN
+# OVERSIGHT ─────────────────────────────────────────────────────────────────
+# `client-certificates.yaml` issues one leaf per CALLER and its header states
+# the rule: "`iam-db` and `task-db` get none: they answer, they never call."
+# `project-db` is the third instance of that shape. Nothing in this estate dials
+# it over gRPC today — the `project` module that will is not written, and no
+# `.rs` in `gateway`, `iam` or `task` names it as an upstream — and its one
+# outbound connection is to its own MariaDB engine, which is not a hop this
+# authority serves.
+#
+# THAT ENGINE HOP IS ALREADY ENCRYPTED AND NEEDS NOTHING FROM HERE.
+# `infra/databases/project-db.yaml` sets `tls: {enabled: true, required: true}`,
+# so `require_secure_transport` is ON. `project-db`'s chart connects with
+# `database.sslMode: required` and an EMPTY `database.sslCaSecret`, which
+# encrypts and checks no certificate in either direction, and it authenticates
+# with the generated password in `project-db-password`. So the engine hop
+# carries no client certificate at all, and the one the operator does mint —
+# `project-db-mariadb-client-cert`, beside `project-db-mariadb-server-cert` —
+# belongs to the MariaDB operator's own per-instance CA. That authority is
+# unrelated to `yadgar-internal-ca` and must stay that way; the client-leaf
+# header explains why pointing a non-rustls verifier at this root would need the
+# extended-key-usage argument re-checked.
+#
+# THE DAY SOMETHING DIALS `project-db` OVER gRPC, THAT CALLER NEEDS A LEAF in
+# `client-certificates.yaml`. `project-db` still will not.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -298,3 +390,61 @@ spec:
   usages:
     - server auth
     - digital signature
+---
+# The project registry's serving leaf, and the first certificate added to this
+# file after the bootstrap that minted the other four. It copies `iam-db-tls`
+# and `task-db-tls` rather than `iam-tls` or `task-tls`, because `project-db` is
+# the same kind of module they are: a headless `-db` answering gRPC on 50051
+# that calls nothing over this authority.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: project-db-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  # THE NAME THE CHART ALREADY READS, not a convention this file assumes.
+  # `project-db/chart/values.yaml` ships `tls.certSecret: project-db-tls` with
+  # `tls.certSecretKey: tls.crt` and `tls.keySecretKey: tls.key`, and
+  # `yadgarhq/argocd` overrides none of the three — its shared `tls.enabled:
+  # true` reaches every module chart and names no Secret. So the pod is already
+  # mounting a volume for this exact Secret name and finding nothing in it.
+  secretName: project-db-tls
+  commonName: project-db
+  # HEADLESS, like both sibling `-db` services: `kubectl get svc -n yadgar`
+  # reads `clusterIP: None` for `project-db`. The certificate names the SERVICE,
+  # because that is the name a client verifies against however many pod
+  # addresses it dialled.
+  dnsNames:
+    - project-db
+    - project-db.yadgar
+    - project-db.yadgar.svc
+    - project-db.yadgar.svc.cluster.local
+  duration: 2160h # 90d
+  renewBefore: 768h # 30d +48h; the next free step on this file's ladder
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    # `server auth` AND NOT `client auth`, identical to the four leaves above.
+    # This module answers and never calls, so a `client auth` bit here would
+    # widen the leaf for a caller that does not exist — and under the ONE
+    # authority this deployment runs, the absence of that bit is exactly what
+    # stops a stolen serving certificate being replayed as a client credential.
+    # `digital signature` is the plain key usage a TLS 1.3 handshake exercises,
+    # named rather than left to a default.
+    #
+    # OMITTING THIS BLOCK WOULD BE THE TRAP RATHER THAN WIDENING IT: cert-manager
+    # then issues a leaf with no extended key usage, which webpki accepts in
+    # BOTH directions. `scripts/check-certificate-usages.py` refuses an absent or
+    # empty `usages` and a list naming both directions, for every Certificate
+    # under `infra/` that names this issuer, and `ci-pr` runs it on the pull
+    # request as well as on the commit.
+    - server auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
