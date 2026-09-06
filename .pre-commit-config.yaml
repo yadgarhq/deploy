@@ -24,7 +24,7 @@ repos:
   # `pre-commit autoupdate`.
 
   - repo: https://github.com/yadgarhq/actions
-    rev: v1.13.1
+    rev: v1.17.0
     hooks:
       - id: gitleaks
       - id: prettier
@@ -44,29 +44,33 @@ repos:
       # the guard closes rather than a state this check may report.
       - id: actionlint
 
-  # LOCAL, and not in the shared repository, because it encodes a fact about
-  # THIS deployment: one authority signs both the serving and the client leaves
-  # under infra/internal-tls/, so their `usages` lists are the only thing
-  # keeping the two directions apart. A leaf that omits `usages` gets no
-  # extended key usage from cert-manager and is valid in both — the default is
-  # the unsafe value, which is why this is a gate rather than a review note.
-  #
-  # This repository has no manifest validation in CI, so a hook is the whole of
-  # it. The shared `ci-pr` workflow runs every hook declared here with no SKIP
-  # list, which is what makes a pre-commit hook gate the pull request too.
-  #
-  # `language: python` rather than `system`: pre-commit builds the environment
-  # and installs PyYAML, which the CI runner's bare interpreter does not carry.
+      # THE EKU WALL, WHICH USED TO BE LOCAL HERE (ledger 720). It was `repo:
+      # local`, `scripts/check-certificate-usages.py`, scoped `files:
+      # ^infra/.*\.yaml$` and to `issuerRef.name == "yadgar-internal-ca"`. The
+      # argument for keeping it local was that it encodes a fact about THIS
+      # deployment — one authority signs both directions, so the `usages` list
+      # is the whole wall — and that argument is sound and is not what moved it.
+      #
+      # WHAT MOVED IT IS THAT BOTH SCOPINGS FAIL OPEN, measured by running the
+      # hook rather than reading it: a Certificate naming BOTH directions under
+      # the internal CA is reported `Passed` when it sits at the repository
+      # root, and `Passed` inside `infra/` when the issuer is renamed to
+      # `yadgar-internal-ca-v2`. `--all-files` does not save it, because
+      # `files:` filters that list too. The shared definition drops both
+      # scopings, walks the whole tree, exempts an authority by `isCA: true`
+      # rather than by a name that can be changed elsewhere, and refuses a run
+      # that inspected nothing.
+      #
+      # THIS IS STILL THE ONLY REPOSITORY THAT REFERENCES IT, and that is a
+      # measurement rather than an omission: `deploy` is the only one in the
+      # estate declaring a `kind: Certificate` at all. Publication makes the
+      # check AVAILABLE rather than switching it on (ADR-0577), so the id sits
+      # in yadgarhq/actions waiting for whoever declares the next leaf.
+      - id: certificate-usages
+
   - repo: local
     hooks:
-      - id: certificate-usages
-        name: internal-CA leaves name exactly one direction
-        entry: python scripts/check-certificate-usages.py
-        language: python
-        additional_dependencies: [pyyaml]
-        files: ^infra/.*\.yaml$
-
-      # ALSO LOCAL, AND FOR THE SAME REASON ONE LEVEL UP. The runner scale set
+      # LOCAL, AND FOR A REASON ONE LEVEL UP FROM THE ONE ABOVE. The runner scale set
       # exists only here, so a definition in yadgarhq/actions would be a hook
       # that is a no-op in fifteen repositories. What it guards is the one image
       # reference in this repository naming an artefact this organisation builds

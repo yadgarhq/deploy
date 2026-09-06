@@ -34,9 +34,20 @@ WHY THIS LIVES IN THIS REPOSITORY AND NOT IN `yadgarhq/actions`. D62 puts SHARED
 CI in one place, and this check is not shared: `infra/estate-front-runner.yaml`
 exists nowhere else, so a definition in `yadgarhq/actions` would be a hook that
 is a no-op in all fifteen other repositories. It is exactly the argument
-`.pre-commit-config.yaml` already makes for `check-certificate-usages.py` here
-and `versions_pinned.py` in `yadgarhq/argocd` — a fact about one deployment is
-gated where that deployment lives. And the hook is where a gate becomes
+`versions_pinned.py` makes in `yadgarhq/argocd` — a fact about one deployment is
+gated where that deployment lives.
+
+THE EKU GATE USED TO BE THE OTHER HALF OF THAT SENTENCE, and ledger 720 moved
+it, which is worth recording because it sharpens the test rather than weakening
+it. `check-certificate-usages.py` was local here on the same reasoning: one
+authority signs both directions in THIS deployment, so the `usages` list is the
+whole wall. That fact is still true and still local. What was not local is the
+RULE — a leaf names one direction — and keeping the rule local made it a rule in
+force in one repository, scoped to one directory and one issuer name, both of
+which it could be walked around. So the test is not "does only one repository
+have the subject today", it is "is the rule itself general". The runner image
+pin is not: `infra/estate-front-runner.yaml` is the only thing it can ever
+describe. And the hook is where a gate becomes
 load-bearing rather than advisory: the shared `ci-pr` workflow's `precommit` job
 runs every hook in that file with no SKIP list, and it feeds `ci / passed`,
 which is this repository's only required status check.
