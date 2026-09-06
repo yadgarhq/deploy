@@ -1278,12 +1278,17 @@ requested, and every pod in this estate says `latest` somewhere.
 
 `minRunners: 0`, so there is no pod between jobs and nothing to check on an idle
 cluster. That also means this change replaces no running pod when it syncs: the
-next job builds its runner from the new pin. The listener is a different object
-and does get replaced — the chart writes a `actions.github.com/values-hash`
-annotation over the whole values block, so changing the image line changes that
-hash (verified by rendering the chart before and after). Expect a new
-`AutoscalingListener` pod in `arc-systems`; a job in flight during the sync is
-the case to avoid.
+next job builds its runner from the new pin.
+
+The listener is a different object, and what happens to it is **expected rather
+than observed** — said plainly so nobody takes it for a measurement. What IS
+measured: the chart writes an `actions.github.com/values-hash` annotation over
+the whole values block, and rendering the chart before and after shows that
+changing the image line changes that hash. So the object Argo applies differs by
+more than the image line. Whether the controller then recreates the
+`AutoscalingListener` pod is an inference about how it reads that annotation,
+and `helm template` cannot see it. Expect a new listener pod in `arc-systems`; a
+job in flight during the sync is the case to avoid either way.
 
 **The weekly rebuild does not bump the runner binary.** GitHub deprecates old
 runner binaries and refuses registration for one far enough behind, so this
