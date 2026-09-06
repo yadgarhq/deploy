@@ -87,7 +87,8 @@
 #                                              # scale set, or none
 #
 # The exact shape of that failure is deliberately NOT asserted here, because
-# seeing it means installing this and nobody has. A `resource.customizations.health.actions.github.com_AutoscalingRunnerSet`
+# seeing it now means BREAKING a working install: the listener is Running
+# (measured 2026-09-06). A `resource.customizations.health.actions.github.com_AutoscalingRunnerSet`
 # entry would make the Degraded claim true. That key lives in `argocd-cm`, which
 # is `yadgarhq/argocd`'s object (`install/values.yaml`, `configs.cm`) rather
 # than this repository's, so it is not written here.
@@ -200,28 +201,46 @@ spec:
             containers:
               - name: runner
                 # ─────────────────────────────────────────────────────────────
-                # THIS IMAGE DOES NOT EXIST YET. BUILD IT FIRST.
+                # CI BUILDS THIS IMAGE. PIN THE DIGEST IT PUBLISHES.
                 # ─────────────────────────────────────────────────────────────
                 #
-                # MIGRATION_NOTES.md, "The estate-front runner", carries the
-                # Containerfile, the login, the push and the step that makes the
-                # pushed package PUBLIC. Until it is pushed a queued job leaves a
-                # pod in ImagePullBackOff naming this reference; nothing is
-                # created until a job is queued, because `minRunners: 0`.
+                # The Containerfile lives at
+                # `yadgarhq/actions`, `containers/estate-runner/Containerfile`,
+                # and `.github/workflows/estate-runner-image.yaml` builds it.
+                # That workflow scans the candidate before publishing anything,
+                # fails when our layers add a CRITICAL or HIGH the pinned base
+                # did not carry, asserts the published manifest commits to the
+                # digest it scanned, attaches an SBOM, signs the digest with
+                # cosign, and only then promotes `:latest`. ADR-0579: an image
+                # the estate depends on is built by CI, never by hand from a
+                # runbook.
                 #
-                # PUSHING IS NOT ENOUGH ON ITS OWN. A package created by a first
-                # push to GHCR is PRIVATE, and this pod carries no pull
-                # credential — there is no `imagePullSecrets` in the template
-                # below, deliberately. A pushed-but-private package therefore
-                # fails as ImagePullBackOff with a 401 from the registry, which
-                # reads like a typo in the reference rather than a visibility
-                # setting. `imagePullSecrets` IS in the `AutoscalingRunnerSet`
-                # CRD's pod-spec schema, so that route is buildable — it was
-                # rendered and rejected, because the Secret it needs holds a
-                # classic PAT with `read:packages`, which is the credential shape
-                # the section above refuses. All twelve container packages this
-                # organisation already publishes are public; this one matches
-                # them.
+                # READ THE DIGEST OFF THE RUN, NOT OFF A TAG. The workflow's
+                # last step prints the exact line below into the run's step
+                # summary. `:latest` and the dated tag both move; only the
+                # digest is the thing cosign signed.
+                #
+                # BUMPING IT IS A DELIBERATE EDIT, and that is the standing
+                # obligation this line carries. The workflow rebuilds weekly on
+                # cron to refresh its apt and rustup layers, so a new digest
+                # exists most Mondays and NOTHING moves this file — the same
+                # discipline as `image.digest` in `yadgarhq/argocd`'s
+                # `versions/<module>.yaml`. A cluster left unbumped keeps
+                # running the digest below, which is correct rather than
+                # broken; it simply ages. (Unlike those files there is no tag
+                # to carry alongside — the digest is the whole pin.)
+                #
+                # NO `imagePullSecrets`, DELIBERATELY, and the package is public
+                # to match. The `estate-runner` package is public (ledger 661),
+                # and the workflow re-verifies an anonymous pull on every run,
+                # because a visibility flip is otherwise an ImagePullBackOff
+                # with a 401 that reads like a typo in this reference.
+                # `imagePullSecrets` IS in the `AutoscalingRunnerSet` CRD's
+                # pod-spec schema, so that route is buildable — it was rendered
+                # and rejected, because the Secret it needs holds a classic PAT
+                # with `read:packages`, which is the credential shape the
+                # section above refuses. The other container packages this
+                # organisation publishes are public; this one matches them.
                 #
                 # A PURPOSE-BUILT IMAGE, NOT THE STOCK RUNNER PLUS A `rustup`
                 # STEP, and the choice is argued rather than defaulted:
@@ -243,12 +262,16 @@ spec:
                 #   An image can guarantee that before a job starts. A job step
                 #   can only discover it.
                 #
-                # THE COST, STATED. GitHub deprecates old runner binaries, and a
-                # runner too far behind is refused at registration. This image
-                # therefore has to be rebuilt when the upstream runner is
-                # bumped — a standing obligation, not a one-off. Pin it by
-                # digest here when it exists.
-                image: ghcr.io/yadgarhq/estate-runner:0.1.0
+                # THE COST, STATED, AND WHERE IT IS NOW PAID. GitHub deprecates
+                # old runner binaries, and a runner too far behind is refused at
+                # registration. The weekly rebuild does NOT fix that on its own:
+                # the Containerfile's `FROM` is digest-pinned, so the cron
+                # refreshes apt and rustup while the runner version stays put.
+                # Moving it is an edit to that `FROM` digest in
+                # `yadgarhq/actions`, followed by a bump of the pin below — a
+                # standing obligation, not a one-off, and it is paid in two
+                # repositories rather than at a workstation.
+                image: ghcr.io/yadgarhq/estate-runner@sha256:52bb30bba06518f01c7bf862d5a3765090de0fe6b150b7c464aa9e355e4afd0b
                 command: ["/home/runner/run.sh"]
                 # Development sizing (D55). `cargo build` of the suite is the
                 # peak; the limit is memory only, because a CPU limit would make
