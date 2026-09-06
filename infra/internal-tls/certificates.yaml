@@ -447,10 +447,12 @@ spec:
     #
     # OMITTING THIS BLOCK WOULD BE THE TRAP RATHER THAN WIDENING IT.
     # cert-manager then issues a leaf with no extended key usage, which webpki
-    # accepts in BOTH directions. `scripts/check-certificate-usages.py` refuses
-    # an absent or empty `usages` and a list naming both directions, for every
-    # Certificate under `infra/` that names this issuer, and `ci-pr` runs it on
-    # the pull request as well as on the commit.
+    # accepts in BOTH directions. The `certificate-usages` hook refuses an
+    # absent or empty `usages` and a list naming both directions, for every
+    # Certificate in this repository — not only the ones under `infra/`, and not
+    # only the ones naming this issuer, both of which the local hook it replaced
+    # would have skipped (ledger 720). `ci-pr` runs it on the pull request as
+    # well as on the commit.
     - server auth
     - digital signature
   issuerRef:
