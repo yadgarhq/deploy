@@ -23,8 +23,9 @@ invisible when skipped does not belong in a document.
 **Mint `iam-keys` — "The identity encryption keys" below — before the first
 sync,** if you are not using `make bootstrap`. Everything else a first sync needs
 now generates itself (ADR-0517): the cache password and the broker account come
-from `infra/bootstrap/`, and every internal certificate from
-`infra/internal-tls/`. Without `iam-keys` a fresh cluster reaches every pod Ready
+from `infra/bootstrap/`, the administrative bootstrap token does too (ledger
+638, below), and every internal certificate comes from `infra/internal-tls/`.
+Without `iam-keys` a fresh cluster reaches every pod Ready
 **except `iam`**, which stays in `ContainerCreating` naming the file it cannot
 find.
 
@@ -2117,3 +2118,46 @@ purpose. `estate-runner` is rebuilt every Monday, so "newest" moves with no
 commit here; a freshness rule would redden weekly naming nobody's change.
 Bumping the pin stays the deliberate two-repository edit the ledger 610 section
 above describes.
+
+---
+
+## The administrative bootstrap token (ledger 638, ADR-0492, ADR-0517)
+
+`infra/bootstrap/admin-bootstrap-token.yaml` mints the credential that lets the
+FIRST administrator exist before any administrator exists to create one
+(ADR-0492). It is generated on first sync, the same only-if-absent way as
+`valkey-password` and `nats-auth` — see that file's own comments for the
+mechanism and for why it is not a `make secrets` block.
+
+**Unlike those three, this one is human-facing, and ADR-0517 requires it be
+retrievable at least once through a documented command. This is that command:**
+
+```bash
+kubectl -n yadgar get secret admin-bootstrap-token -o jsonpath='{.data.token}' | base64 -d; echo
+```
+
+(the trailing `echo` is only because the token itself carries no newline, by
+the same design as `valkey-password` — without it the shell prompt lands on
+the same line as the last character and can read as truncation)
+
+Run it, hand the value to whoever is creating the first administrator, and
+nothing else needs to touch this Secret. Per ADR-0596 no other reason to read
+`.data` exists — the Job that creates it, this section and the key name
+already say what it is for.
+
+**A cluster recreate mints a NEW token, and the old value stops being useful
+the moment the old cluster is gone.** ADR-0596 names this shape for
+`github-scm`: "never ABSENT... present-and-wrong, which no existence check can
+discriminate." This Secret reaches it by a different road — `github-scm` is
+never absent because `make bootstrap` unconditionally re-applies it, this one
+because the Job's RBAC grants `create` alone, so on a rebuild it cannot tell
+"the Secret survived" from "the Secret is new", it only ever sees
+absent-then-present — but the operator-facing failure is the same one: the
+Secret comes back Ready either way, so nothing in the cluster distinguishes a
+token an operator can still use from one that has already been replaced.
+**Re-run the command above after every recreate. A value copied down before
+the last `kind delete cluster` is not the current token.**
+
+(`estate-runner-github`'s ADR-0596 failure mode is a different bug — a
+rotation the ARC listener pod does not re-read — not this one; see "The
+`estate-front` runner" above.)
