@@ -346,6 +346,153 @@ spec:
                         for about a fortnight. Check the Certificate resource
                         and whether the pod restarted after the Secret was
                         rewritten.
+                  # THE ONLY SECURITY RULE IN THIS FILE, and the only one whose
+                  # subject is an act rather than a condition. ADR-0492 leaves
+                  # the admin bootstrap token live, and accepts that risk on the
+                  # reasoning that a leak "is loud and lands in the audit
+                  # trail". THERE IS NO AUDIT TRAIL. The audit store is a
+                  # deferred future module, and this namespace runs a Prometheus
+                  # server and NO log shipper — the same fact the dial rule at
+                  # the top of this group rests on. So `gateway`'s
+                  # `tracing::warn!` at the `Bootstrap::Accepted` arm, added in
+                  # `gateway`#59, was the ONLY record that a stranger became an
+                  # administrator, and it lived in a pod's stdout and died with
+                  # the pod. The record did not survive the event it recorded.
+                  #
+                  # `gateway`#60 converted it, exactly as the invalidation
+                  # signal was converted before it: a log line nobody reads
+                  # became `yadgar_gateway_bootstrap_accepted_total`, and this is
+                  # the rule that reads it. That conversion buys DETECTION and
+                  # NOT ATTRIBUTION, and the annotation below says so rather than
+                  # implying an attribution this estate cannot make.
+                  #
+                  # THE PREDICATE IS SHAPED BY THE COUNTER BEING ABSENT UNTIL
+                  # THE FIRST ACCEPTANCE, which is the one thing to understand
+                  # about this rule. `metrics::counter!` registers a name with
+                  # the recorder only when the macro EXECUTES, so a gateway that
+                  # has never accepted a bootstrap token publishes no such series
+                  # at all — absent, rather than present at 0. `gateway` argues
+                  # at the emit site why that is correct for a security counter
+                  # (a counter of events has no meaningful zero, and publishing
+                  # one from every replica would stop existence being the
+                  # signal). It leaves this rule three shapes, two of which are
+                  # wrong:
+                  #
+                  #   - `absent(...)` is wrong for the reason this file already
+                  #     argues at length above: a name that never appears fires
+                  #     never.
+                  #   - `increase(...) > 0` is wrong, and is the shape somebody
+                  #     will propose. Prometheus takes the first sample in the
+                  #     range as the BASELINE, so a counter going absent -> 1
+                  #     yields an increase of ~0. Such a rule catches the SECOND
+                  #     acceptance and misses the FIRST — exactly backwards for
+                  #     an event whose first occurrence is the one that matters.
+                  #   - `max_over_time(...) > 0` is right, and it is the same
+                  #     shape `DialUpstreamNeverResolved` uses. It is a
+                  #     comparison on a series that must EXIST to match, so it
+                  #     honours this file's absence-is-never-zero rule, and here
+                  #     existence and the event are the same fact: the series
+                  #     cannot be present below 1.
+                  #
+                  # THE RANGE IS 24h BECAUSE THE STORE'S RETENTION IS, and this
+                  # is the honest limit of what was bought. `retention: 24h` is
+                  # set at the top of this file, so a bare `> 0` would stop
+                  # matching roughly five minutes after the emitting pod died —
+                  # reproducing the very failure this rule exists to correct, a
+                  # record that does not outlive the pod. `max_over_time` over
+                  # the whole retention window keeps the alert firing for as long
+                  # as this store can remember anything at all. AFTER 24 HOURS IT
+                  # GOES QUIET, and the clock is the thing to get right here.
+                  # IT RUNS FROM THE LAST SCRAPE OF THE EMITTING SERIES, NOT
+                  # FROM THE ACCEPTANCE — so the 24h figure describes only the
+                  # case where the pod that served the request is GONE. A
+                  # SURVIVING pod is the dominant case and behaves the opposite
+                  # way: it keeps being scraped at 1, the range never empties,
+                  # and this rule fires continuously for as long as that pod
+                  # lives. Both halves measured with `promtool test rules`
+                  # rather than read off the documentation — a pod alive
+                  # throughout fires at 25m and STILL FIRES at 28h; a pod that
+                  # dies at 15m fires at 25m and is silent by 25h.
+                  #
+                  # SO THERE ARE TWO HONEST SENTENCES AND NOT ONE, and the
+                  # annotation carries both. Where the pod survives, this alert
+                  # DOES NOT CLEAR, and there is no way to acknowledge or
+                  # silence it in this estate: `alertmanager.enabled` is `false`
+                  # at the top of this file, and a silence is an Alertmanager
+                  # object. Where the pod is gone, the record expires a day
+                  # after its last scrape whether or not anybody looked, and
+                  # quiet then does not mean nothing happened. This converts
+                  # "dies with the pod" into "outlives the pod, by a day at
+                  # worst and indefinitely while it lives". It does not close
+                  # ADR-0492's §7.3.4 gap, and nothing short of the audit module
+                  # will.
+                  #
+                  # NO `for:`, for `TlsCertificateExpiringSoon`'s reason and one
+                  # of its own. The value never decreases within a pod's life, so
+                  # there is nothing to flap and a pending window could only
+                  # delay the page; and a restart loop that reset the timer every
+                  # time would silence it, which is the failure this file exists
+                  # to correct. On a security event the delay is the whole cost.
+                  #
+                  # `critical`, AND IT STAYS CRITICAL NOW THAT THE NON-CLEARING
+                  # BEHAVIOUR IS UNDERSTOOD. The objection to weigh is real: an
+                  # alert that cannot be acknowledged and does not clear is the
+                  # classic way a `critical` becomes wallpaper. It is answered
+                  # by this file's own precedent rather than by taste.
+                  # `DialUpstreamNeverResolved` is `critical` and is a LATCH in
+                  # exactly the same way — its gauge "is a LATCH rather than a
+                  # sample", so it too never clears while the pod lives — so
+                  # this rule introduces no property the group does not already
+                  # carry at this severity. Severity states HOW BAD THE EVENT
+                  # IS, and an unattributable administrator now exists in this
+                  # deployment; downgrading on the ground that the estate has no
+                  # silence path would encode an operational gap as a security
+                  # judgement, and would be the wrong label on the day an
+                  # Alertmanager is enabled. The condition is cleared by acting
+                  # on it — rotate the Secret, and the pod that served the
+                  # request stops being the current one.
+                  - alert: BootstrapTokenAccepted
+                    expr: max_over_time(yadgar_gateway_bootstrap_accepted_total[24h]) > 0
+                    labels:
+                      severity: critical
+                    annotations:
+                      # NO `{{ $value }}` HERE, AND IT IS NOT AN OMISSION. The
+                      # other three rules print theirs because each is a reading
+                      # an operator can act on — a file count, seconds to expiry.
+                      # This expression's value is a COUNTER'S CUMULATIVE TOTAL
+                      # SINCE THAT POD BOOTED, which is not the number a reader
+                      # of this sentence would take it for: it is not a count for
+                      # the window, and a restart starts a fresh series, so it
+                      # can DROP while the alert still fires from the older one.
+                      # A number that invites a wrong conclusion is worse than no
+                      # number in an annotation whose whole purpose is to say
+                      # exactly how little is known. The real count lives where
+                      # the description sends the operator.
+                      summary: >-
+                        the admin bootstrap token was ACCEPTED in
+                        {{ $labels.namespace }}
+                      description: >-
+                        Somebody presented this deployment's admin bootstrap
+                        token to gateway and it was accepted, so an
+                        administrator was CREATED or an existing account was
+                        PROMOTED to one. This says THAT it happened and cannot
+                        say WHO did it: the bootstrap path carries no actor by
+                        construction (D73), so no identity exists to record.
+                        There is no audit trail in this estate — this alert
+                        and an ephemeral pod log are the entire record. THIS
+                        ALERT WILL NOT CLEAR BY ITSELF while the pod that
+                        served the request is still running and being scraped,
+                        and nothing here can acknowledge or silence it, because
+                        this deployment runs no Alertmanager. If that pod is
+                        already gone the record instead expires 24 hours after
+                        its LAST SCRAPE — not 24 hours after the acceptance —
+                        whether or not anyone investigated, so silence later is
+                        not evidence that nothing happened. The pod named here,
+                        {{ $labels.pod }}, MAY ALREADY BE GONE: the alert
+                        deliberately outlives it, and a restarted gateway
+                        reports a new series. Enumerate the administrators iam
+                        holds and confirm every one of them was expected, then
+                        rotate the admin-bootstrap-token Secret.
   destination:
     server: https://kubernetes.default.svc
     namespace: observability
