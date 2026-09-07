@@ -92,10 +92,12 @@
 # something does, it needs its own check.
 #
 # ── PER SERVICE, NOT PER HOP ────────────────────────────────────────────────
-# Three certificates for four hops, because a certificate says WHO THE CALLER IS
-# and the destination is not part of an identity. `gateway` dials both `iam` and
-# `task`, and it is one caller either way: it gets ONE identity, one mount, one
-# expiry to watch, where a per-hop scheme would give it two of each.
+# Four certificates for six hops, because a certificate says WHO THE CALLER IS
+# and the destination is not part of an identity. `gateway` dials `iam` and
+# `task` today and `project` at the cut-over, and it is one caller in all three
+# cases: it gets ONE identity, one mount, one expiry to watch, where a per-hop
+# scheme would give it three of each. `project` gains a leaf and the gateway
+# does not, which is the rule doing its work rather than an inconsistency.
 #
 # A per-hop certificate would also assert something no server can act on. `iam`
 # cannot tell "issued for the gateway-to-iam hop" from "issued for the
@@ -105,13 +107,20 @@
 #
 # The callers are the three services that dial another over gRPC:
 #
-#   gateway → iam        gateway → task
-#   iam     → iam-db     task    → task-db
+#   gateway → iam        gateway → task       gateway → project
+#   iam     → iam-db     task    → task-db     project → project-db
 #
-# `iam-db` and `task-db` get none: they answer, they never call. A service that
-# LATER becomes a caller needs its own leaf here, and its absence will show up
-# as a refused handshake rather than as a quiet cleartext hop, which is the
-# failure mode worth having.
+# THE TWO `project` HOPS ARE NOT BUILT YET and the material is here anyway.
+# `yadgarhq/project` is unwritten, so nothing dials `project-db` and the gateway
+# has no `project` upstream — but ADR-0588 puts a leaf's ladder step at its
+# CREATION, and `project-tls` beside this file has to precede the module for a
+# harder reason (ledger 641). `gateway-client-tls` covers `gateway → project`
+# unchanged: a third upstream is the same caller.
+#
+# `iam-db`, `task-db` and `project-db` get none: they answer, they never call.
+# A service that LATER becomes a caller needs its own leaf here, and its absence
+# will show up as a refused handshake rather than as a quiet cleartext hop,
+# which is the failure mode worth having.
 #
 # ── WHAT THE SERVER LEARNS FROM THIS, AND WHAT IT DOES NOT ──────────────────
 # READ THIS BEFORE BUILDING THE SERVER HALF. A client certificate proves
@@ -147,8 +156,11 @@
 # SAN `iam` — and `iam` is a name this cluster ACTUALLY DIALS. Put that beside
 # the trap above and one omitted `usages` block turns a client leaf into a
 # valid SERVING certificate for a real destination. `gateway-caller`,
-# `iam-caller` and `task-caller` resolve to nothing, in this namespace or any
-# other, so the same mistake yields a certificate for a host nobody reaches.
+# `iam-caller`, `task-caller` and `project-caller` resolve to nothing, in this
+# namespace or any other, so the same mistake yields a certificate for a host
+# nobody reaches. `project-caller` is the one to be careful with: `project` IS a
+# name this cluster will dial the moment the module deploys, and `project-tls`
+# already exists to serve it.
 # `yadgarhq/dial`'s own rig already spells an identity this way, as
 # `yadgar-dial-test-caller`.
 #
@@ -174,8 +186,9 @@
 # certificate does not weaken a hop, it stops it. A process that never re-reads
 # a renewed client leaf works until the leaf it read expires — NINETY days
 # after that leaf was issued, and thirty days after its replacement was already
-# on disk. `renewBefore` — 750h, 756h and 762h for these three, staggered on
-# the ladder argued in `certificates.yaml` — rewrites the Secret a little before
+# on disk. `renewBefore` — 750h, 756h, 762h and 780h for these four, staggered
+# on the ladder argued in `certificates.yaml`, which is ONE ladder shared with
+# that file rather than a second one — rewrites the Secret a little before
 # day 59; the leaf already in memory stays valid to its own `notAfter` at day
 # 90. The failure therefore
 # arrives a month after the material that would have prevented it was in place,
@@ -280,6 +293,46 @@ spec:
     - task-caller
   duration: 2160h # 90d
   renewBefore: 762h # 30d +42h; the ladder in certificates.yaml
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - client auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+# project → project-db. `project` also SERVES, under `project-tls`; the two
+# certificates are different material for opposite directions and neither
+# substitutes for the other — the same distinction `iam` and `task` carry above.
+#
+# THIS LEAF LANDS BEFORE ITS CALLER EXISTS, and that is ADR-0588 rather than an
+# oversight: a leaf under this directory takes its ladder step when it is
+# CREATED, whether or not any process holds its Secret yet. `yadgarhq/project`
+# is unwritten. Issuing the material first is the same discipline the serving
+# leaves used, and for `project-tls` beside it the ordering is load-bearing —
+# a module deployed before its serving leaf exists crash-loops (ledger 641).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: project-client-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  secretName: project-client-tls
+  # NOT `project`, which is a name this cluster WILL dial as soon as the module
+  # is deployed — see the header. `project-caller` resolves to nothing, in this
+  # namespace or any other, so the omitted-`usages` trap cannot turn this into a
+  # valid serving certificate for a real destination.
+  commonName: project-caller
+  dnsNames:
+    - project-caller
+  duration: 2160h # 90d
+  renewBefore: 780h # 30d +60h; the ladder in certificates.yaml
   privateKey:
     algorithm: ECDSA
     size: 256

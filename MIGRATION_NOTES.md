@@ -490,6 +490,211 @@ dials `project-db`, THAT caller needs a leaf — `project-db` still will not.
 
 ---
 
+## Issue `project` its two certificates, BEFORE the module exists (ledger 641)
+
+**`yadgarhq/project` does not exist yet, and that is why this section is here
+rather than later.** The certificates land first, on purpose.
+
+`project-db` deployed and crash-looped because no authority had been told to
+issue it a leaf. `yadgarhq/argocd` sets `tls.enabled: true` for every module
+chart, the chart mounts a volume for `tls.certSecret`, and `optional: true`
+turns an ABSENT Secret into an EMPTY DIRECTORY rather than a `FailedMount` — so
+the binary reports a missing path instead of kubelet reporting a missing volume.
+The refusal is the fail-closed guard working; the diagnosis is what was
+expensive. `project` hits the identical wall for the identical reason.
+
+**So the order is: these two certificates merge, THEN `yadgarhq/project` gets
+its `yadgar-deployable` topic.** Nothing enforces that ordering. It is written
+down because the last time it was discovered rather than followed.
+
+Two objects, not one, because `project` both ANSWERS and CALLS:
+
+| object               | file                                          | direction                      | `renewBefore` |
+| -------------------- | --------------------------------------------- | ------------------------------ | ------------- |
+| `project-tls`        | `infra/internal-tls/certificates.yaml`        | serving — `gateway` dials it   | `774h`        |
+| `project-client-tls` | `infra/internal-tls/client-certificates.yaml` | client — it dials `project-db` | `780h`        |
+
+`project-db` still gets no client leaf: it answers and never calls, the same
+rule `iam-db` and `task-db` sit under.
+
+**This is a GitOps change and Argo applies it.** `infra/internal-tls/` is synced
+by the `deploy` Application, so merging the two `Certificate` objects is the
+whole of the fix. The steps below CHECK it.
+
+### 1. Watch both certificates get issued
+
+```bash
+kubectl -n yadgar get certificate project-tls project-client-tls -w
+# READY=True for both, normally within seconds of the sync
+```
+
+If either does not go Ready, read the reason rather than re-applying:
+
+```bash
+kubectl -n yadgar describe certificate project-tls
+kubectl -n yadgar get certificaterequest | grep project
+```
+
+### 2. Confirm each Secret carries the three keys the two sides read
+
+```bash
+kubectl -n yadgar get secret project-tls \
+  -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
+# ca.crt
+# tls.crt
+# tls.key
+```
+
+```bash
+kubectl -n yadgar get secret project-client-tls \
+  -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
+# ca.crt
+# tls.crt
+# tls.key
+```
+
+`project`'s pod will mount BOTH: `tls.crt` and `tls.key` out of `project-tls` to
+serve with, `tls.crt` and `tls.key` out of `project-client-tls` to call
+`project-db` with, and `ca.crt` out of `project-db-tls` to verify `project-db`.
+Do not print the values.
+
+### 3. Confirm the SANs, and confirm the extended key usages point OPPOSITE ways
+
+```bash
+kubectl -n yadgar get secret project-tls -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -text \
+  | grep -A1 'Subject Alternative Name'
+# DNS:project, DNS:project.yadgar, DNS:project.yadgar.svc,
+# DNS:project.yadgar.svc.cluster.local
+```
+
+```bash
+kubectl -n yadgar get secret project-client-tls -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -text \
+  | grep -A1 'Subject Alternative Name'
+# DNS:project-caller     <- and NOT DNS:project
+```
+
+```bash
+kubectl -n yadgar get secret project-tls -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -text | grep -A1 'Extended Key Usage'
+# TLS Web Server Authentication   <- and NOT TLS Web Client Authentication
+
+kubectl -n yadgar get secret project-client-tls -o jsonpath='{.data.tls\.crt}' \
+  | base64 -d | openssl x509 -noout -text | grep -A1 'Extended Key Usage'
+# TLS Web Client Authentication   <- and NOT TLS Web Server Authentication
+```
+
+**The last two commands are the ones worth running even when everything comes
+up.** One authority signs both directions in this namespace, and the extended
+key usage is the only thing keeping them apart. A leaf naming both, or naming
+neither, is accepted by every server here and by every client. `project` is the
+first module in this file to hold BOTH kinds, so it is the first place a
+copy-paste between the two objects would go unnoticed.
+
+**And `project-caller` must not resolve.** `kubectl -n yadgar get svc
+project-caller` must return `NotFound`, now and forever. The identity is spelled
+that way precisely so an omitted `usages` block cannot yield a valid serving
+certificate for a host something actually dials.
+
+### 4. Pods — DEFERRED, and there is nothing to run yet
+
+**There are no `project` pods.** `yadgarhq/project` is unwritten, so the
+equivalent of `project-db`'s "confirm the pods go Ready" step cannot be run when
+this merges. Run it at step 7 of the onboarding sequence instead, once the
+module is tagged and the `yadgar-deployable` topic is added:
+
+```bash
+kubectl -n yadgar logs deployment/project | grep listening
+# "project listening" with tls=true and a non-zero watching count
+```
+
+**That line is not the acceptance test.** It describes `project`'s own listener
+and says nothing about the hop below it. The dial to `project-db` is lazy, so a
+`project` whose `projectDb.tls` was never set comes up `1/1 Running`, reads Argo
+`Synced`/`Healthy`, and fails every RPC. Drive a real `ResolveProject` or
+`ListProjects` through it and read the answer.
+
+**The client certificate has to join the rotation watch set (ADR-0523).** It is
+read once from a directory mount that rotates in place, which is the whole test.
+Forgetting it is worse than forgetting a serving leaf: an expired client
+certificate does not weaken the hop, it stops it, ninety days after issuance and
+thirty days after the replacement was already on disk.
+
+### 5. Confirm the renewal instants did not collide — THIS ONE IS NOT OPTIONAL
+
+```bash
+kubectl -n yadgar get certificate \
+  -o custom-columns='NAME:.metadata.name,RENEWAL:.status.renewalTime' \
+  --sort-by=.status.renewalTime
+```
+
+**Every pair of adjacent renewal instants must be more than 300 seconds apart.**
+That is the invariant the `renewBefore` ladder in
+`infra/internal-tls/certificates.yaml` exists to buy: each service's pods draw a
+rotation splay from `[0, 300)` independently, so two services sharing an instant
+put all of their pods through a restart inside one five-minute window, and a
+PodDisruptionBudget cannot hold that because a pod that exits 0 was never
+evicted.
+
+**These two leaves are minted on their own day, so their steps do not set their
+instants.** `2160h - 774h = 1386h`, which is 231 six-hour steps exactly, and
+`2160h - 780h = 1380h`, which is 230 — so each instant inherits the
+hour-modulo-six, minute and second OF ISSUANCE rather than a ladder position.
+
+**They share ONE draw, and land 6h apart from each other.** Both are minted in
+the same reconcile, so they occupy the same offset in the six-hour cycle and are
+separated by exactly one ladder step. They cannot collide with each other. One
+unlucky draw puts BOTH beside an existing instant, so the remedy below applies
+to both.
+
+**THE ODDS ARE ONE IN EIGHTEEN, NOT THE ONE IN THIRTY-SIX THIS FILE QUOTES FOR
+`project-db-tls`.** That figure assumed a single lane. Measured on 2026-09-07,
+the live instants sit on TWO pod-restarting offsets: `0:40:52` for the seven
+bootstrap leaves, and `4:28:33` for `project-db-tls`, which did not join the
+grid. Two disjoint 600-second windows in a 21600-second cycle is `1200/21600`,
+about 5.6%. The edge leaf's `0:46:04` is not a third lane — Envoy Gateway
+reloads it through xDS and no pod restarts on it.
+
+That figure ASSUMES the issuance second is uniform over the six-hour cycle, and
+nothing measured says it is — cert-manager issues when an Argo reconcile reaches
+the object. The two windows being DISJOINT is measured (the offsets are 2h12m19s
+apart, far wider than 600 seconds), so the arithmetic follows from the premise;
+the premise is the untested part. Run the check below rather than reasoning from
+the odds — it is the check, not the figure, that tells you whether this leaf
+collided.
+
+**If either did collide,** do NOT retune `renewBefore` to dodge it: any
+alignment computed from today's `notAfter` dissolves at the first renewal.
+Delete the Secret and let cert-manager re-issue at a different second:
+
+```bash
+kubectl -n yadgar delete secret project-tls          # and/or project-client-tls
+# cert-manager re-issues within a reconcile; then re-run the command above
+```
+
+Re-issuing before `project` is deployed costs nothing at all, which is another
+reason to merge these certificates ahead of the module rather than beside it.
+
+### What this deliberately does NOT add
+
+**No client leaf for `project-db`.** It answers and never calls;
+`iam-db` and `task-db` have none either. Its one outbound connection is to its
+own MariaDB engine, which is encrypted by `require_secure_transport` and
+authenticated by the generated `project-db-password`, under the MariaDB
+operator's own per-instance CA rather than `yadgar-internal-ca`.
+
+**No new leaf for the gateway.** `gateway-client-tls` already carries the
+gateway's identity to `iam` and `task`; a third upstream reuses it. Client
+leaves are per CALLER, not per hop.
+
+**Nothing in `yadgarhq/argocd`.** The `projectDb: {tls: {enabled: true}}` key
+that makes `project` verify `project-db`, and the `project: {tls: {enabled:
+true}}` key that makes the GATEWAY verify `project`, are separate changes in a
+separate repository. Merging these certificates does not set either.
+
+---
+
 ## The development TLS edge (ledger 454)
 
 Establishes HTTPS in front of the gateway so an MCP client on this machine

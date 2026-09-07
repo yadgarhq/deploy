@@ -2,18 +2,32 @@
 # file. THE CUT-OVER HAS HAPPENED, so read this as live material rather than as
 # material waiting for a lever. `tls.enabled: true` is set for all FIVE server
 # charts by `yadgarhq/argocd`, and `LISTEN_TLS_ENABLED=1` reaches all five —
-# read off the Deployments, not assumed from the manifest. FOUR OF THE FIVE
-# LISTENERS ARE RUNNING ON IT. `project-db` is the fifth, was onboarded last,
-# and its pods refuse to boot until the leaf below is issued, which is what
-# this file's `project-db-tls` section is about. This count read four until
-# 2026-09-06. A change here reaches a serving hop.
+# read off the Deployments, not assumed from the manifest. ALL FIVE LISTENERS
+# ARE RUNNING ON IT, `project-db` included: its leaf was issued
+# 2026-09-06T10:28:33Z and `kubectl -n yadgar get pods -l app=project-db` read
+# two pods, `1/1 Running`, zero restarts, on 2026-09-07. That sentence read
+# "four of the five" until then and "four" until 2026-09-06. A change here
+# reaches a serving hop.
+#
+# THE SIXTH LEAF BELOW HAS NO MODULE, AND THAT IS THE POINT RATHER THAN A LOOSE
+# END. `project-tls` is declared ahead of `yadgarhq/project` because the
+# certificate has to exist BEFORE the module deploys — the ordering `project-db`
+# paid for in ledger 641. So this file declares SIX serving leaves and five of
+# them are mounted by a running pod.
 #
 # ── THE SAN IS THE SERVICE NAME, AND NOT AN IP ──────────────────────────────
 # A client verifies the certificate against THE HOST IT ASKED FOR, not the
 # address it reached: `dial` sets `ClientTlsConfig::domain_name` from the
 # configured host, which is the in-cluster Service name — `iam`, `iam-db`,
-# `task`, `task-db`, `project-db`. That is what makes ONE certificate work
-# across every pod behind a headless Service, which ALL FIVE of these are.
+# `task`, `task-db`, `project-db`, and `project` once it is deployed. That is
+# what makes ONE certificate work across every pod behind a headless Service,
+# which ALL FIVE OF THE DEPLOYED ONES are.
+#
+# `project` IS NOT PART OF THAT MEASUREMENT AND MUST NOT BE READ INTO IT.
+# `kubectl get svc -n yadgar` has no `project` row on 2026-09-07, because the
+# module is unwritten, so nothing here claims its Service is headless. Its leaf
+# names the SERVICE either way, which is the property that survives both
+# answers.
 #
 # THE COUNT IN THAT SENTENCE READ "three of these four" UNTIL 2026-09-06 AND
 # WAS ALREADY WRONG. `kubectl get svc -n yadgar` reads `clusterIP: None` for
@@ -100,16 +114,23 @@
 # that exits 0 of its own accord was never evicted.
 #
 # THE INVARIANT THIS SCHEDULE BUYS: at every renewal instant, at most one
-# service restarts. The closest two instants are 6h apart, against a 300-second
-# splay window — measured on 2026-09-06 across the eight live leaves. SEVEN of
-# them step by exactly 6h, from 2026-11-02T18:40:52Z to 2026-11-04T06:40:52Z,
-# and the EIGHTH is the edge leaf, a further 6h5m12s out.
+# service restarts. The closest two instants are 2h12m19s apart, against a
+# 300-second splay window — measured on 2026-09-07 across the NINE live leaves.
+# Seven of them step by exactly 6h, from 2026-11-02T18:40:52Z to
+# 2026-11-04T06:40:52Z; the edge leaf is a further 6h5m12s out; and
+# `project-db-tls` sits BETWEEN two of the seven at 2026-11-03T10:28:33Z,
+# 3h47m41s after `gateway-client-tls` and 2h12m19s before `task-db-tls`.
 #
-# THAT FIGURE READ 2h44m19s UNTIL 2026-09-06 AND WAS STALE RATHER THAN WRONG
-# WHEN WRITTEN: the certificates were re-issued on 2026-09-02 and the number did
-# not follow them. It is corrected rather than deleted because the margin is the
-# reason the splay window is safe, and a reader checking the claim against the
-# cluster has to be able to reach the same number.
+# THAT FIGURE READ 6h UNTIL 2026-09-07, AND 2h44m19s BEFORE THAT. Neither was
+# wrong when written; each went stale when the material moved under it — the
+# first when the certificates were re-issued on 2026-09-02, the second when
+# `project-db-tls` was issued on 2026-09-06 and landed OFF the 6-hour grid,
+# exactly as the section on leaves minted on their own day says it would. It is
+# corrected rather than deleted because the margin is the reason the splay
+# window is safe, and a reader checking the claim against the cluster has to be
+# able to reach the same number. 2h12m19s is 7939 seconds against a 300-second
+# window, so the invariant holds with room — and that is now the number to
+# watch rather than the 6-hour step.
 #
 # ── WHY `renewBefore` AND NOT `duration` ────────────────────────────────────
 # The argument is stronger than "the expiry does not move". `duration` is part
@@ -119,15 +140,23 @@
 # material, so changing it RESCHEDULES without minting anything.
 #
 # ── WHY A 6-HOUR LADDER, AND WHY IT CANNOT RE-LOCK ──────────────────────────
-# `renewalTime = notAfter - renewBefore`, exactly — checked against all nine
-# live rows again on 2026-09-06, with no jitter of any kind.
+# `renewalTime = notAfter - renewBefore`, exactly — checked against all TEN
+# live rows again on 2026-09-07, with no jitter of any kind. Ten is the nine
+# leaves plus the authority's own Certificate, and `project-db-tls` is now one
+# of the nine: its row reads 2026-11-03T10:28:33Z against a `notAfter` of
+# 2026-12-05T10:28:33Z, which is 768h to the second. The confirmation step in
+# `MIGRATION_NOTES.md` has been run and this number moved, as that section said
+# it would.
 #
-# NINE IS THE SIZE OF A MEASUREMENT AND NOT THE COUNT OF LEAVES THIS DIRECTORY
-# DECLARES, and the difference is the whole reason this number is left alone.
-# `project-db-tls` below is the TENTH Certificate in this repository and it has
-# never been issued, so no row of it has been read and this sentence claims
-# nothing about it. Confirming it once it is issued is a step in
-# `MIGRATION_NOTES.md`, and the number here moves when that step has been run.
+# TEN IS THE SIZE OF A MEASUREMENT AND NOT THE COUNT OF CERTIFICATES THIS
+# REPOSITORY DECLARES, and keeping the two apart is the whole reason this number
+# is left alone. `grep -rn 'kind: Certificate'` returns TWELVE objects after
+# this change: six serving leaves here, four client leaves beside this file, the
+# internal authority in `issuer.yaml`, and the edge leaf in `infra/tls/`. The
+# two with no live row are `project-tls` below and `project-client-tls`, both
+# declared ahead of their module, so this sentence claims nothing about either.
+# Confirming them once they are issued is a step in `MIGRATION_NOTES.md`, and
+# the number here moves when that step has been run.
 #
 # So a distinct `renewBefore` is a distinct instant AND a distinct period: a
 # leaf renews every `duration - renewBefore`, which is 1434h at the near end of
@@ -145,11 +174,28 @@
 # margin is hours and cert-manager reconciles within minutes, so the algebra
 # does not need to be exact to hold.
 #
-# A NEW CERTIFICATE TAKES THE NEXT STEP. `project-db-tls` below took 768h on
-# 2026-09-06, so THE NEXT FREE STEP IS 774h, then 780h. Never a value that is
-# already in use. ADR-0588 makes that unconditional: a leaf under this directory
-# takes its step when it is CREATED, whether or not any process watches its
-# Secret yet.
+# A NEW CERTIFICATE TAKES THE NEXT STEP, AND THE LADDER IS SHARED ACROSS BOTH
+# FILES IN THIS DIRECTORY rather than being per-file — `client-certificates.yaml`
+# points back here for exactly that reason, and a step is free only if NEITHER
+# file uses it. Taken today, in ladder order rather than declaration order:
+#
+#   720h  infra/tls/certificate.yaml   the EDGE leaf, held out — see below
+#   726h  iam-tls
+#   732h  task-tls
+#   738h  iam-db-tls
+#   744h  task-db-tls
+#   750h  gateway-client-tls
+#   756h  iam-client-tls
+#   762h  task-client-tls
+#   768h  project-db-tls
+#   774h  project-tls
+#   780h  project-client-tls
+#
+# So THE NEXT FREE STEP IS 786h, then 792h. Never a value that is already in
+# use. ADR-0588 makes that unconditional: a leaf under this directory takes its
+# step when it is CREATED, whether or not any process watches its Secret yet —
+# which is why the two `project` leaves hold 774h and 780h while
+# `yadgarhq/project` is still unwritten.
 #
 # ── 720h IS DELIBERATELY UNUSED HERE ────────────────────────────────────────
 # It belongs to the EDGE leaf, `infra/tls/certificate.yaml`, which is left
@@ -192,18 +238,52 @@
 # the instant inherits the hour-modulo-six, the minute and the second OF
 # ISSUANCE rather than a position on this ladder.
 #
-# WHAT FOLLOWS IN PRACTICE. Seven of the eight live instants sit on an
-# `HH:40:52` grid at 6-hour spacing, so this leaf collides only if it is issued
-# near that one offset. The window is 600 seconds wide rather than 300, because
-# the new instant is too close on EITHER side of an existing one, so the chance
-# is 600/21600 — ROUGHLY ONE IN THIRTY-SIX, about 2.8%. Unlikely, and nothing
-# like impossible.
+# WHAT FOLLOWED IN PRACTICE FOR `project-db-tls`. Seven of the eight live
+# instants sat on an `HH:40:52` grid at 6-hour spacing, so that leaf collided
+# only if it was issued near that ONE offset. The window is 600 seconds wide
+# rather than 300, because the new instant is too close on EITHER side of an
+# existing one, so the chance was 600/21600 — roughly one in thirty-six. IT DID
+# NOT COLLIDE: issued 2026-09-06T10:28:33Z, its instant is
+# 2026-11-03T10:28:33Z, offset `4:28:33` into the cycle, 2h12m19s clear of its
+# nearest neighbour.
 #
-# THE EIGHTH INSTANT IS NOT A SECOND TARGET, which is what keeps the answer at
-# one in thirty-six rather than one in twenty-four. It belongs to the edge leaf
-# at `:46:04`, and Envoy Gateway reloads that one through xDS, so no pod
-# restarts on it and it cannot contribute to the multi-service event this ladder
-# exists to remove — ADR-0588's structural ground for holding it out.
+# THE EDGE INSTANT IS NOT A TARGET. It sits at `:46:04`, and Envoy Gateway
+# reloads that one through xDS, so no pod restarts on it and it cannot
+# contribute to the multi-service event this ladder exists to remove —
+# ADR-0588's structural ground for holding it out.
+#
+# ── THERE ARE TWO LANES NOW, AND THE ODDS DOUBLED ───────────────────────────
+# READ THIS INSTEAD OF THE ONE-IN-THIRTY-SIX FIGURE ABOVE. That figure was
+# correct on the day it was written and is NOT the number a leaf added today
+# faces.
+#
+# `project-db-tls` did not join the `HH:40:52` grid — it created a SECOND
+# offset, `4:28:33`. Both are pod-restarting lanes, so a leaf minted on its own
+# day must now miss BOTH. Two disjoint 600-second windows in a 21600-second
+# cycle is 1200/21600 — ONE IN EIGHTEEN, about 5.6%. The arithmetic generalises:
+# `600 * lanes / 21600`, where `lanes` is the number of DISTINCT offsets in the
+# `renewalTime` column that a pod restarts on, not the number of leaves. Every
+# further leaf minted on its own day that does NOT collide adds a lane and
+# raises the figure for the one after it.
+#
+# ONE PREMISE IN THAT FIGURE IS ASSUMED RATHER THAN MEASURED, and it is named
+# here so the next reader weighs it rather than inheriting it: the issuance
+# second is taken to be UNIFORM over the six-hour cycle. Nothing observed says
+# it is. cert-manager issues when an Argo reconcile reaches the object, and
+# reconciles are neither uniform nor independent of each other. The DISJOINTNESS
+# of the two windows IS measured — the offsets are 2h12m19s apart, far wider
+# than 600 seconds — so the arithmetic is sound given the premise; it is the
+# premise that is untested. Nothing downstream depends on the exact figure: the
+# remedy below is the same at one in eighteen as at one in six.
+#
+# `project-tls` AND `project-client-tls` SHARE ONE DRAW, which is a property to
+# check rather than assume. Both are minted in the same Argo reconcile, and both
+# periods are exact multiples of six hours — `2160h - 774h = 1386h` is 231 steps
+# and `2160h - 780h = 1380h` is 230 — so each inherits the second of its own
+# issuance, and the two land ONE LADDER STEP, 6h, apart. They cannot collide
+# with each other. They DO occupy the same offset in the cycle, so a single
+# unlucky draw puts both beside an existing instant and the remedy in
+# `MIGRATION_NOTES.md` has to be applied to both.
 #
 # THE STEP IS STILL 768h. ADR-0588 requires the next free value, and a distinct
 # period is what keeps the separations growing once the first renewal has moved
@@ -241,7 +321,9 @@
 # extended-key-usage argument re-checked.
 #
 # THE DAY SOMETHING DIALS `project-db` OVER gRPC, THAT CALLER NEEDS A LEAF in
-# `client-certificates.yaml`. `project-db` still will not.
+# `client-certificates.yaml`. THAT LEAF IS NOW THERE, AHEAD OF ITS CALLER:
+# `project-client-tls`, on the same ADR-0588 discipline as `project-tls` below.
+# `project-db` still gets none.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
@@ -453,6 +535,72 @@ spec:
     # only the ones naming this issuer, both of which the local hook it replaced
     # would have skipped (ledger 720). `ci-pr` runs it on the pull request as
     # well as on the commit.
+    - server auth
+    - digital signature
+  issuerRef:
+    name: yadgar-internal-ca
+    kind: Issuer
+    group: cert-manager.io
+---
+# The project registry's LOGIC-TIER serving leaf, and the SECOND certificate
+# added to this file after the bootstrap. It copies `task-tls` rather than
+# `project-db-tls`, because `project` is the kind of module `iam` and `task`
+# are: it answers gRPC on 50052 AND it calls `project-db`, so it takes a client
+# leaf in `client-certificates.yaml` as well as this one. `project-db` takes
+# only this direction because it never calls.
+#
+# THIS LEAF LANDS BEFORE THE MODULE, DELIBERATELY, AND THE ORDER IS THE WHOLE
+# REASON THE OBJECT IS WRITTEN NOW. `yadgarhq/project` does not exist yet.
+# `yadgarhq/argocd` sets `tls.enabled: true` for every module chart, the chart
+# therefore mounts a volume for `tls.certSecret`, and `optional: true` turns an
+# ABSENT Secret into an EMPTY DIRECTORY rather than a `FailedMount` — so a
+# module deployed before its leaf exists reports a missing path from inside the
+# binary and crash-loops. That is exactly what `project-db` did (ledger 641).
+# The certificate must exist BEFORE the `yadgar-deployable` topic is added to
+# the repository. Nothing enforces that ordering, which is why it is written
+# here and in `MIGRATION_NOTES.md`.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: project-tls
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  # `<service>-tls`, the convention every leaf above follows. UNLIKE
+  # `project-db-tls`, this name is NOT read back off a chart that already ships
+  # it — `yadgarhq/project` is unwritten — so this is the name that repository
+  # must adopt rather than a name measured from it.
+  secretName: project-tls
+  commonName: project
+  # NO HEADLESS CLAIM IS MADE HERE. `kubectl get svc -n yadgar` has no
+  # `project` row on 2026-09-07, because the module is not deployed. The four
+  # names are listed for the reason every leaf above lists them: a caller in
+  # another namespace dials a longer one, and a certificate naming only
+  # `project` is a silent trap for the first such caller. That argument holds
+  # whichever way the Service is eventually declared.
+  dnsNames:
+    - project
+    - project.yadgar
+    - project.yadgar.svc
+    - project.yadgar.svc.cluster.local
+  duration: 2160h # 90d
+  renewBefore: 774h # 30d +54h; the next free step on this directory's ladder
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    # `server auth` AND NOT `client auth`, identical to the five leaves above.
+    # `project` DOES call — it dials `project-db` — and that direction is
+    # `project-client-tls` in `client-certificates.yaml`, separate material with
+    # a separate key. Naming both here would collapse the wall that replaces a
+    # second certificate authority, on the one module in this file where the
+    # temptation is real because both directions genuinely exist.
+    #
+    # OMITTING THE BLOCK WOULD BE WORSE THAN WIDENING IT. cert-manager then
+    # issues a leaf with no extended key usage at all, which webpki accepts in
+    # BOTH directions. The `certificate-usages` hook refuses both shapes.
     - server auth
     - digital signature
   issuerRef:
