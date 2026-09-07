@@ -266,6 +266,16 @@
 # further leaf minted on its own day that does NOT collide adds a lane and
 # raises the figure for the one after it.
 #
+# ONE PREMISE IN THAT FIGURE IS ASSUMED RATHER THAN MEASURED, and it is named
+# here so the next reader weighs it rather than inheriting it: the issuance
+# second is taken to be UNIFORM over the six-hour cycle. Nothing observed says
+# it is. cert-manager issues when an Argo reconcile reaches the object, and
+# reconciles are neither uniform nor independent of each other. The DISJOINTNESS
+# of the two windows IS measured — the offsets are 2h12m19s apart, far wider
+# than 600 seconds — so the arithmetic is sound given the premise; it is the
+# premise that is untested. Nothing downstream depends on the exact figure: the
+# remedy below is the same at one in eighteen as at one in six.
+#
 # `project-tls` AND `project-client-tls` SHARE ONE DRAW, which is a property to
 # check rather than assume. Both are minted in the same Argo reconcile, and both
 # periods are exact multiples of six hours — `2160h - 774h = 1386h` is 231 steps

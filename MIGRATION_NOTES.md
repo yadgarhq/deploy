@@ -656,6 +656,14 @@ grid. Two disjoint 600-second windows in a 21600-second cycle is `1200/21600`,
 about 5.6%. The edge leaf's `0:46:04` is not a third lane — Envoy Gateway
 reloads it through xDS and no pod restarts on it.
 
+That figure ASSUMES the issuance second is uniform over the six-hour cycle, and
+nothing measured says it is — cert-manager issues when an Argo reconcile reaches
+the object. The two windows being DISJOINT is measured (the offsets are 2h12m19s
+apart, far wider than 600 seconds), so the arithmetic follows from the premise;
+the premise is the untested part. Run the check below rather than reasoning from
+the odds — it is the check, not the figure, that tells you whether this leaf
+collided.
+
 **If either did collide,** do NOT retune `renewBefore` to dodge it: any
 alignment computed from today's `notAfter` dissolves at the first renewal.
 Delete the Secret and let cert-manager re-issue at a different second:
