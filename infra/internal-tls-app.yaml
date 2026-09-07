@@ -1,7 +1,18 @@
-# The INTERNAL certificate authority and the four service certificates it
-# issues. Separate from `infra/tls`, which is the EDGE, and the separation is
-# the point rather than tidiness — see infra/internal-tls/issuer.yaml for the
-# argument.
+# The INTERNAL certificate authority and the TEN leaves it issues: SIX serving
+# certificates in `certificates.yaml` and FOUR client certificates in
+# `client-certificates.yaml`. The count is split by file because one number for
+# both is what let the previous wording — "the four service certificates" — rot
+# through four additions without a reader being able to tell which four it
+# meant. Reproduce it with `grep -c 'kind: Certificate' infra/internal-tls/*.yaml`,
+# which reads 6, 4 and 1; the 1 is the authority's own Certificate in
+# `issuer.yaml` and is not a leaf.
+#
+# TWO OF THE TEN HAVE NO POD. `project-tls` and `project-client-tls` are
+# declared ahead of `yadgarhq/project`, because a module deployed before its
+# serving leaf exists crash-loops (ledger 641).
+#
+# Separate from `infra/tls`, which is the EDGE, and the separation is the point
+# rather than tidiness — see infra/internal-tls/issuer.yaml for the argument.
 #
 # WAVE -8, the same wave the databases use, and for the same reason: it is the
 # first wave after the operators at -10, so cert-manager's CRDs and its
