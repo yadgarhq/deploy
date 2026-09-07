@@ -1,5 +1,7 @@
-# The credential bootstrap: the machine-only secrets a first sync must not ask a
-# human for (ADR-0517).
+# The credential bootstrap: the secrets a first sync must not ask a human for
+# (ADR-0517) — the three machine-only ones (`secrets.yaml`) and the one
+# human-facing but still self-generated one, the admin bootstrap token
+# (`admin-bootstrap-token.yaml`, ledger 638).
 #
 # BEFORE ITS CONSUMERS, and the wave is the whole ordering mechanism. `valkey`
 # and `nats` are at -10 and both mount a Secret this creates; `iam` mounts a

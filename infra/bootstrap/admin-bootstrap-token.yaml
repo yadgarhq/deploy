@@ -1,0 +1,204 @@
+# The bootstrap token (ADR-0492, ledger 638) — the credential that lets the
+# FIRST administrator exist before any administrator exists to create one.
+#
+# ── WHY THIS FILE IS NOT `infra/bootstrap/secrets.yaml` ─────────────────────
+# That file's own header says "THREE, NOT FOUR" and explains at its foot why a
+# fourth `create` block does not belong there: `iam-keys` is DATA-BEARING and
+# must never be generated. This credential is the opposite kind of exception.
+# It is NOT data-bearing — losing it costs a regeneration, never a row — and it
+# is NOT machine-only either: `valkey-password`, `nats-auth` and
+# `nats-auth-gateway` are, in that file's own words, "never read by a person",
+# while an operator MUST be able to read this one out, at least once, to hand
+# it to the first administrator. That is a third shape, and ADR-0517 names it
+# by name: "A human-facing credential, meaning the first admin password and
+# anything an operator must paste elsewhere, is also generated but MUST be
+# retrievable at least once through a documented command." This IS that
+# credential. Keeping it in its own file keeps the three-way split legible
+# instead of merging two different comments into one Job script.
+#
+# ── NOT A `make secrets` BLOCK ───────────────────────────────────────────────
+# `make secrets` (Makefile) is ADR-0580/ADR-0596's path for the four
+# HUMAN-OWNED credentials — `yadgar-dev-ca`, `iam-keys`, `estate-runner-github`,
+# `github-scm` — each of which meets the three-part test: data-bearing, cannot
+# arrive through git, cannot be generated on demand. This token FAILS the third
+# part: nothing outside this deployment mints it, so the deployment mints it
+# for itself. Adding it to `make secrets` would be adding a fifth entry to an
+# enumeration ADR-0596 bounded at four for credentials that do not belong there
+# at all — the count stays at four.
+#
+# ── THE MECHANISM, COPIED FROM `infra/bootstrap/secrets.yaml` AND
+#    `infra/bootstrap/rbac.yaml` ─────────────────────────────────────────────
+# Same idempotent-POST shape: the Job does not read-then-write, it POSTs and
+# treats the 409 AlreadyExists every run after the first gets as success, so
+# there is no check-then-act window. Same generation shape: N random bytes
+# from `/dev/urandom`, base64, no trailing newline.
+#
+# Same RBAC too, reused rather than duplicated: this Job runs as the existing
+# `bootstrap-secrets` ServiceAccount (`rbac.yaml`), whose Role grants `create`
+# on secrets and NOTHING else. A second identity would not narrow that any
+# further — `rbac.yaml`'s own comment records that `resourceNames` is not
+# available on `create`, so any identity with this permission can create any
+# Secret in `yadgar`, this token's name included. A separate ServiceAccount
+# here would be an identical Role under a different name, reviewed twice for
+# the same guarantee. What stays separate is the FILE, for the reason above:
+# the category this credential belongs to, and the retrieval contract that
+# comes with it, are worth reading on their own rather than folded into
+# `secrets.yaml`'s "never read by a person" framing.
+#
+# ── THE RETRIEVAL COMMAND ADR-0517 REQUIRES ──────────────────────────────────
+# The one thing that makes this Secret legible to an operator who did not
+# create it:
+#
+#   kubectl -n yadgar get secret admin-bootstrap-token -o jsonpath='{.data.token}' | base64 -d; echo
+#
+# (the trailing `echo` only compensates for the token itself carrying no
+# newline — see the generation comment below — so the shell prompt does not
+# land on the same line as the last character.) That is the whole command. Nothing else reads this Secret's value, and per
+# ADR-0596 nothing else needs to: this comment, the key name and the Job that
+# creates it already establish what the Secret is FOR without opening `.data`.
+# The retrieval is the mechanism ADR-0517 demands, not the exposure ADR-0596
+# forbids — see MIGRATION_NOTES.md, "The administrative bootstrap token", for
+# the runbook copy of this command and the warning below.
+#
+# ── A RECREATE MINTS A NEW ONE — THE SAME "NO EXISTENCE CHECK CAN
+#    DISCRIMINATE" SHAPE ADR-0596 NAMES FOR `github-scm` ────────────────────
+# ADR-0596's own words for `github-scm`: "never ABSENT... present-and-wrong,
+# which no existence check can discriminate." This Secret gets there by a
+# different road — `github-scm` is never absent because `make bootstrap`
+# unconditionally re-applies it; this one is never absent because `create`-only
+# RBAC means the Job cannot tell a rebuilt-but-empty cluster from a live one,
+# it only ever sees "the Secret is absent" or "the Secret is present" — but the
+# operator-facing failure is identical in shape. On a `kind delete cluster`
+# rebuild the old token is gone with the cluster, this Job runs again, mints a
+# DIFFERENT 264 bits, and the Secret comes back Ready holding a value that
+# agrees with nothing an operator wrote down. No existence check — Job status,
+# Secret age, `kubectl get` — can tell the two apart, because the Secret is
+# never ABSENT: it is present, Ready, and WRONG the moment the old one is
+# discarded. Retrieve it again after every recreate. Do not reuse a value
+# copied from before one.
+#
+# (`estate-runner-github` is ADR-0596's OTHER named example, and its failure is
+# a different bug — a rotation the ARC listener pod does not re-read, not a
+# recreate. Cited by name here only to say it is not this one.)
+#
+# ── THE FAIL-CLOSED CONTRACT THE CONSUMER MUST HONOUR (ledger 638 step 5) ───
+# Two rules, stated separately because they are two different bugs:
+#
+#   1. An ABSENT OR EMPTY bootstrap secret DISABLES the bootstrap path. The
+#      consumer refuses every request on that path with a status naming the
+#      missing configuration — e.g. "bootstrap token is not configured" —
+#      NEVER a comparison against a missing or empty value. This is not
+#      ADR-0569's ordinary refuse-to-boot rule: refusing to START the gateway
+#      over one administrative knob would take MCP and login down with it, an
+#      outage priced far above the gap. Serve everything else; disable only
+#      this one path; say why.
+#   2. An ABSENT secret is NEVER EQUAL to a PRESENTED one. Stated separately
+#      from (1) because it is a different bug: (1) is about the route's
+#      configuration, this is about the comparator. A constant-time comparator
+#      written to compare two EMPTY inputs returns TRUE — so "no secret
+#      configured" must short-circuit to refusal before any comparison runs,
+#      never fall through into one.
+#
+# Until the consumer (`yadgarhq/gateway`, step 5) lands, this Secret sits
+# unread. Its RBAC does not grant the gateway anything — a Secret volume mount
+# or `secretKeyRef` on the gateway's own ServiceAccount is a separate, later
+# grant, made when that consumer is built.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: admin-bootstrap-token
+  namespace: yadgar
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    # Replace+Force for the same reason as `bootstrap-secrets`: the Job's
+    # `spec.template`/`selector` are immutable, so an ordinary apply fails the
+    # moment this script changes, and re-running is safe by construction — see
+    # the 409 handling below. A resync-driven recreate of THIS Job answers 409
+    # and changes nothing; it is not what mints a new token. Only the Secret
+    # itself being absent — a real cluster rebuild — does that.
+    argocd.argoproj.io/sync-options: Replace=true,Force=true
+spec:
+  # Same rationale as `bootstrap-secrets`: retry a rescheduled pod or a briefly
+  # unreachable API server, not a 403, which does not become a 201 on the
+  # fourth try. Going Failed here should be loud — it means the estate has no
+  # bootstrap credential and, until an administrator exists another way,
+  # ADR-0492's whole recovery path is unreachable.
+  backoffLimit: 4
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: admin-bootstrap-token }
+    spec:
+      # Reuses `bootstrap-secrets`' identity (`rbac.yaml`) rather than minting
+      # a second one — see the RBAC note above for why a second Role would not
+      # narrow anything.
+      serviceAccountName: bootstrap-secrets
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 100
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: bootstrap
+          # Same image, same reasoning as `bootstrap-secrets`: curl and a shell
+          # are enough for one POST, and `registry.k8s.io/kubectl` has no shell
+          # to run a script with at all.
+          image: curlimages/curl:8.16.0
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            # `$(...)` below is the SHELL's, not Kubernetes' — see
+            # `bootstrap-secrets`' identical note. This container declares no
+            # environment, so every substitution reaches /bin/sh untouched.
+            - |
+              set -eu
+
+              api="https://kubernetes.default.svc"
+              sa="/var/run/secrets/kubernetes.io/serviceaccount"
+              ns="$(cat "$sa/namespace")"
+              token_auth="$(cat "$sa/token")"
+
+              # POST and classify the answer, identical to `bootstrap-secrets`:
+              # 201 is a first run, 409 is every run after it, and anything
+              # else is a failure that stops the Job rather than being read as
+              # "already exists". A 403 from a mis-bound Role must not be
+              # swallowed — that reading reports a healthy bootstrap while the
+              # estate has zero administrators and no way to create one.
+              create() {
+                code="$(curl --silent --show-error \
+                  --cacert "$sa/ca.crt" \
+                  --header "Authorization: Bearer $token_auth" \
+                  --header "Content-Type: application/json" \
+                  --data-binary @- \
+                  --output /dev/null --write-out '%{http_code}' \
+                  "$api/api/v1/namespaces/$ns/secrets")"
+                case "$code" in
+                  201) echo "$1: created" ;;
+                  409) echo "$1: already exists, left untouched" ;;
+                  *) echo "$1: refused with HTTP $code" >&2; exit 1 ;;
+                esac
+              }
+
+              # 33 random bytes as base64, no trailing newline — the same
+              # shape `bootstrap-secrets`' `password()` uses, for the same
+              # reason: 33 rather than 32 bytes so the base64 carries no `=`
+              # padding for an operator to trim by hand when they paste it.
+              # The generated value never enters this container's process
+              # table — it is piped straight into the request body on stdin.
+              admin_token() { head -c 33 /dev/urandom | base64 | tr -d '\n'; }
+
+              # `stringData`, not `data`: the API server stores exactly the
+              # bytes given, so what lands is the token and nothing appended.
+              create admin-bootstrap-token <<JSON
+              {"apiVersion":"v1","kind":"Secret","type":"Opaque",
+               "metadata":{"name":"admin-bootstrap-token"},
+               "stringData":{"token":"$(admin_token)"}}
+              JSON
+          resources:
+            requests: { cpu: 10m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
