@@ -24,7 +24,7 @@ repos:
   # `pre-commit autoupdate`.
 
   - repo: https://github.com/yadgarhq/actions
-    rev: v1.18.2
+    rev: v1.20.0
     hooks:
       - id: gitleaks
       - id: prettier
@@ -67,6 +67,7 @@ repos:
       # check AVAILABLE rather than switching it on (ADR-0577), so the id sits
       # in yadgarhq/actions waiting for whoever declares the next leaf.
       - id: certificate-usages
+      - id: no-test-skips
 
   - repo: local
     hooks:
