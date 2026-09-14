@@ -2,7 +2,8 @@
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # READ THIS FIRST: THE CNI DOES IMPLEMENT NetworkPolicy. THE EGRESS HALF, WHICH
-# IS ALL THIS FILE CONTAINS, IS UNMEASURED
+# IS ALL THIS FILE CONTAINS, HAS STRONG CIRCUMSTANTIAL EVIDENCE AND NO OBSERVED
+# DROP
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # THIS HEADER SAID "THE CNI IS kindnet, WHICH DOES NOT IMPLEMENT NetworkPolicy"
@@ -18,12 +19,41 @@
 # holds `NET_ADMIN` and `NET_RAW`. Ledger 511 then proved INGRESS enforcement
 # live twelve times over, across six module policies.
 #
-# WHAT IS STILL UNMEASURED IS THE HALF THIS FILE ACTUALLY USES. Every one of
-# those twelve drops was an INGRESS rule. This policy is `policyTypes: [Ingress,
-# Egress]` and its whole substance is egress. Nothing here has watched kindnetd
-# drop an egress packet. So the blanket reason C-18 was red no longer holds, and
-# C-18's real status is a question to ASK of the cluster rather than one this
-# comment may answer in either direction.
+# THE HALF THIS FILE ACTUALLY USES IS THE EGRESS HALF, and every one of those
+# twelve drops was an INGRESS rule. This policy is `policyTypes: [Ingress,
+# Egress]` and its whole substance is egress. THIS PARAGRAPH SAID "NOTHING HERE
+# HAS WATCHED kindnetd DROP AN EGRESS PACKET" UNTIL LEDGER 917. As a statement
+# about packet-level observation that is true. As a statement about what the
+# estate knows it erases a real and discriminating measurement, so the
+# measurement is written here instead of the slogan.
+#
+# WHAT IS MEASURED (ledger 917, read-only, 2026-09-14). Every non-cancelled
+# `smoke.yaml` run on `yadgarhq/estate` carries the "C-18 confinement" step: 143
+# runs, 107 green, 36 skipped, ZERO red. Each green step took 18-21s of wall
+# clock, and one run's own output — `33999752662` — reads `test result: ok.
+# 1 passed; ... finished in 18.02s`, which is six addresses ×
+# `connect_timeout_ms = 3000` in `reference.toml`. 99 of the 107 greens fall in
+# the window between this policy's creation (`2026-09-05T12:40:19Z`) and the
+# creation of `iam-db-ingress` (`2026-09-13T10:29:00Z`). IN THAT WINDOW FIVE OF
+# THE SIX ADDRESSES C-18 DIALS WERE SELECTED BY NO INGRESS POLICY AT ALL:
+# `iam-db` and `task-db` are headless, so they resolve to pod addresses in
+# `10.244.0.0/16`, and no policy selects the `app.kubernetes.io/name: mariadb`
+# pod behind `iam-db-mariadb`. Only `valkey`'s single address was covered, by
+# `valkey-ingress`. So for five of the six, THIS POLICY IS THE ONLY OBJECT THAT
+# COULD HAVE PRODUCED THE TIMEOUT.
+#
+# WHAT IS STILL NOT MEASURED. That argument settles ATTRIBUTION, not
+# OBSERVATION. A timeout is what a DROP looks like; nothing here has read a drop
+# counter or a kindnetd log line for an egress packet, and the controller logs
+# no drops at default verbosity. The accurate sentence is therefore: STRONG
+# CIRCUMSTANTIAL EVIDENCE OF EGRESS ENFORCEMENT, AND NO DIRECTLY OBSERVED
+# DROPPED EGRESS PACKET. Neither "proved" nor "unmeasured" says that, and this
+# file has used both words before it used these.
+#
+# C-18 WAS NEVER RED (ledger 916). The 143 executions above contain no failure,
+# so the "red by design until the CNI changes" story this header used to tell
+# was never what the runs said. The blanket reason for that story is gone twice
+# over: the CNI does enforce, and the row has never once reported a failure.
 #
 # LEDGER 614 — swap the CNI for Cilium or Calico, due 2026-10-03, owned by the
 # nix repo per ADR-0480 — was filed on the claim this header used to make. That
