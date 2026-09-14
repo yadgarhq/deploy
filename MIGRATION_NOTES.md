@@ -73,11 +73,14 @@ epoch counters, and could **inject** events into D25's audit outbox. None of it
 was a decision — the record contains no `requirepass`, `nkey`, `NetworkPolicy` or
 `mTLS`, so it was undeclared rather than accepted.
 
-**A NetworkPolicy would not have fixed it here.** This cluster's CNI is kindnet,
-which does not implement NetworkPolicy: the object is accepted, displayed, and
-never evaluated. One ships anyway as a second layer for real clusters — see
-`infra/network-policies/` — but the thing that actually closes the gap is a
-password on each server, because a server enforces it on every CNI.
+**A NetworkPolicy would not have fixed it here.** That judgment about
+2026-09-02 still stands, but not for the reason this paragraph used to give. The
+old reason was that kindnet does not implement NetworkPolicy, so the object is
+"accepted, displayed, and never evaluated". That is false and has been since
+ledger 684; it is corrected here in ledger 896. The CNI does enforce, so the
+policy in `infra/network-policies/` is a live second layer rather than a
+specification. What actually closes the gap is still a password on each server,
+because a server enforces it on every CNI and every platform.
 
 ### How the passwords are made now
 
@@ -1917,11 +1920,14 @@ reason this order is written down rather than discovered.
 ### What none of this proves
 
 The runner registers and jobs land on it — both observed 2026-09-06, and an
-earlier revision of this paragraph denied both. The NetworkPolicy in
-`infra/estate-front/` is accepted by the API server and evaluated by nothing —
-kindnet implements no NetworkPolicy — so the confinement is a specification, not
-a control. That gap is `yadgarhq/docs` ledger 614, due 2026-10-03, and it belongs
-to the nix repo.
+earlier revision of this paragraph denied both. The claim that followed — that
+the NetworkPolicy in `infra/estate-front/` is "evaluated by nothing, because
+kindnet implements no NetworkPolicy" — is false and has been since ledger 684. It
+is corrected here in ledger 896: kindnetd does evaluate NetworkPolicy. What
+nothing has measured is the EGRESS half, which is all that policy contains, so
+the confinement is neither a proven control nor a mere specification. It is
+untested. Ledger 614 was filed on the premise that has gone, and re-deciding it
+belongs to the record rather than to this file.
 
 Two things here are reasoned rather than observed, and are named so nobody takes
 them for measurements. The teardown order is read off the rendered finalizers;

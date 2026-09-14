@@ -1,26 +1,35 @@
 # The confinement C-18 tests.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# READ THIS FIRST: NOTHING IN THIS FILE IS ENFORCED ON THIS CLUSTER TODAY
+# READ THIS FIRST: THE CNI DOES IMPLEMENT NetworkPolicy. THE EGRESS HALF, WHICH
+# IS ALL THIS FILE CONTAINS, IS UNMEASURED
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# The CNI is **kindnet**, which does not implement NetworkPolicy. Measured, not
-# assumed: `kube-system` runs a `kindnet` DaemonSet and no Calico, Cilium or
-# Weave (2026-09-05). The API server accepts this object, `kubectl get
-# networkpolicy` lists it, `kubectl describe` prints the rules, and **nothing
-# evaluates any of it**. A runner pod can open a connection to any service in
-# the cluster today and will still be able to after this is applied.
+# THIS HEADER SAID "THE CNI IS kindnet, WHICH DOES NOT IMPLEMENT NetworkPolicy"
+# UNTIL LEDGER 896. That is false and has been since ledger 684. The correction
+# is recorded in place, because the false half was an INFERENCE rather than the
+# measurement underneath it.
 #
-# So the front-door discipline of `yadgarhq/estate`'s suite is discipline, not a
-# property of the network. C-18 is the row that says so out loud, and it is RED
-# by design until the CNI changes. The change is kind with `disableDefaultCNI`
-# plus Cilium or Calico, and it belongs to the **nix repo** (ADR-0480 — nix owns
-# the cluster, this repository owns what runs inside it). It is filed as a dated
-# task: **`yadgarhq/docs` ledger 614, due 2026-10-03**. C-18's own failure output
-# prints both, so a red run always names the thing that clears it.
+# STILL TRUE: the CNI is kindnet, and `kube-system` runs a `kindnet` DaemonSet
+# with no Calico, Cilium or Weave. NO LONGER TRUE: that nothing evaluates a
+# NetworkPolicy here. Measured 2026-09-14 — the DaemonSet runs
+# `docker.io/kindest/kindnetd:v20260528-9350166c`, the `kindnet` ClusterRole
+# grants `networking.k8s.io/networkpolicies` `list` and `watch`, and the pod
+# holds `NET_ADMIN` and `NET_RAW`. Ledger 511 then proved INGRESS enforcement
+# live twelve times over, across six module policies.
 #
-# This file ships anyway because it is the SPECIFICATION that row asserts. When
-# the CNI changes it becomes true and C-18 goes green without being edited.
+# WHAT IS STILL UNMEASURED IS THE HALF THIS FILE ACTUALLY USES. Every one of
+# those twelve drops was an INGRESS rule. This policy is `policyTypes: [Ingress,
+# Egress]` and its whole substance is egress. Nothing here has watched kindnetd
+# drop an egress packet. So the blanket reason C-18 was red no longer holds, and
+# C-18's real status is a question to ASK of the cluster rather than one this
+# comment may answer in either direction.
+#
+# LEDGER 614 — swap the CNI for Cilium or Calico, due 2026-10-03, owned by the
+# nix repo per ADR-0480 — was filed on the claim this header used to make. That
+# premise is gone. Whether the row survives on other grounds, such as the
+# FQDN-aware egress rule for GitHub that rule (d) below says plainly it cannot
+# express, is for the record to decide rather than this file.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # WHAT THIS POLICY SELECTS, AND WHAT IT DOES NOT
@@ -78,9 +87,11 @@ spec:
     # already been translated to the pod's `targetPort` — so a rule naming only
     # 443 would refuse every connection to the edge. Rule (d) below excepts the
     # Service CIDR, so there would be no second path and the runner could not
-    # reach the edge at all. THIS FILE IS DORMANT UNTIL THE CNI CHANGES, so that
-    # mistake would not surface until the day it starts being enforced, which is
-    # why the reason is written down rather than left to be rediscovered.
+    # reach the edge at all. THIS CLAUSE USED TO SAY THE FILE IS DORMANT UNTIL
+    # THE CNI CHANGES; the CNI does implement NetworkPolicy (see the header), so
+    # that mistake can surface as the suite being unable to reach the edge for a
+    # reason nothing explains — which is why the reason is written down rather
+    # than left to be rediscovered.
     - to:
         - namespaceSelector:
             matchLabels:

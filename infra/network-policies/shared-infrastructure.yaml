@@ -1,64 +1,74 @@
 # Defence in depth for the shared cache and the shared broker (ledger 518).
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# READ THIS FIRST: NOTHING IN THIS FILE IS ENFORCED ON THE REFERENCE CLUSTER
+# READ THIS FIRST: EVERYTHING IN THIS FILE IS ENFORCED ON THE REFERENCE CLUSTER
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# The reference cluster is kind, and kind's CNI is **kindnet**, which does not
-# implement NetworkPolicy at all. Measured, not assumed: `kube-system` runs a
-# `kindnet` DaemonSet and no Calico, Cilium or Weave. The API server accepts
-# these objects, `kubectl get networkpolicy` lists them, `kubectl describe` shows
-# the rules — and **nothing evaluates any of it**. A pod with no label here can
-# open a connection to Valkey on 6379 today and will still be able to after this
-# is applied.
+# THIS HEADER SAID THE OPPOSITE UNTIL LEDGER 896, and the correction is recorded
+# in place rather than overwritten, because the false half was an INFERENCE and
+# not the measurement it rested on. A reader told only that the old text was
+# wrong would go and re-measure the wrong thing.
 #
-# So this file is NOT what closed task 518, and it must not be read as though it
-# were. What closed it is `requirepass` on the cache
+# THE MEASUREMENT WAS RIGHT AND STILL IS: the reference cluster is kind, its CNI
+# is kindnet, and `kube-system` runs a `kindnet` DaemonSet with no Calico, Cilium
+# or Weave. THE INFERENCE FROM IT — "therefore nothing evaluates a
+# NetworkPolicy here" — IS FALSE, and stopped being true when kindnetd gained a
+# policy controller (ledger 684).
+#
+# What is measured today (2026-09-14):
+#
+# - The DaemonSet runs `docker.io/kindest/kindnetd:v20260528-9350166c`.
+# - The `kindnet` ClusterRole grants `networking.k8s.io/networkpolicies` `list`
+#   and `watch`, and the pod holds `NET_ADMIN` and `NET_RAW`. A CNI that ignored
+#   NetworkPolicy would need neither the watch nor the capabilities.
+# - Ledger 511 proved enforcement LIVE twelve times over: six module ingress
+#   policies, each dropping an unallowed peer at the 4s connect deadline while
+#   the allowed control connected at 0s.
+#
+# So a pod with no label here CANNOT open a connection to Valkey on 6379, and
+# this file may be read as protection, because it is protection.
+#
+# WHAT CLOSED TASK 518 IS STILL THE SERVER-SIDE HALF: `requirepass` on the cache
 # (infra/valkey/valkey.yaml) and the `authorization` block on the broker
-# (infra/nats.yaml), both enforced by the servers themselves and therefore
-# working on every CNI and every platform — which is also what D80 asks for.
-#
-# **A control that cannot fail, presented as protection, is worse than the honest
-# gap.** It is the failure this estate keeps finding, and shipping a
-# NetworkPolicy as the fix here would have been that failure exactly: green
-# because nothing ran it. It is here as a second layer for clusters whose CNI
-# does enforce it, and for the day this one's does.
-#
-# To make it real on this cluster, the CNI has to be replaced — a decision about
-# the reference deployment, not a step in this task.
+# (infra/nats.yaml). Those hold on every CNI and every platform, which is what
+# D80 asks for, and that ordering was right — the server-enforced control leads
+# and the policy follows. What has changed is only that the second layer is a
+# live one rather than a specification.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# WHAT AN ENFORCING CNI WOULD ALSO NEED
+# KUBELET PROBES, AND WHY NO NODE CIDR RULE IS NEEDED
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Stated because the day somebody swaps the CNI is the day it matters, and
-# because it cannot be tested here:
+# Valkey's `livenessProbe` is a `tcpSocket` on 6379 dialled by the kubelet from
+# the NODE, and NATS' probes are `httpGet` on 8222. No rule below names either
+# source, and both keep passing: probe traffic does not originate from a pod, so
+# a pod-selector ingress rule never applies to it. That is ADR-0592, measured on
+# a valkey pod with `restartCount` 0 across 13 hours behind exactly these rules.
 #
-# - **kubelet probe traffic.** Valkey's `livenessProbe` is a `tcpSocket` on 6379
-#   dialled by the kubelet from the NODE, and NATS' probes are `httpGet` on 8222.
-#   Calico and Cilium both permit host-namespace traffic to pods by default, so
-#   neither breaks — but a CNI that does not would fail both probes and restart
-#   healthy pods. Check that before switching, and add a rule for the node CIDR
-#   if it is needed. No node CIDR is written here, because a value nobody can
-#   verify on this cluster is a value nobody will notice is wrong.
-# - **Egress is not restricted at all**, only ingress. Egress rules need DNS
-#   carve-outs to be usable, and a half-written egress policy breaks name
-#   resolution for everything it selects. Ingress is the half that answers the
-#   finding.
+# So no node CIDR is written here, because none is needed. The corollary is the
+# part worth carrying: A PASSING PROBE IS NO EVIDENCE THAT THIS POLICY IS ABSENT
+# OR UNENFORCED. This estate has drawn that inference wrongly twice.
+#
+# **Egress is not restricted at all**, only ingress. Egress rules need DNS
+# carve-outs to be usable, and a half-written egress policy breaks name
+# resolution for everything it selects. Ingress is the half that answers the
+# finding.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # SELECTORS
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# **A podSelector that matches nothing is indistinguishable from a working
-# policy on kindnet.** So every label below was read off rendered output rather
-# than recalled: `app.kubernetes.io/name: valkey` from the Deployment in
+# **A podSelector that matches nothing is accepted, listed and describable, and
+# protects nothing.** Enforcement does not make a typo visible — the estate has
+# no control that refuses a policy whose selector matches nothing (ADR-0685). So
+# every label below was read off rendered output rather than recalled:
+# `app.kubernetes.io/name: valkey` from the Deployment in
 # infra/valkey/valkey.yaml, `app.kubernetes.io/name: nats` from `helm template`
 # of the nats chart at the pinned version, and `app: gateway` / `app: iam` from
 # `helm template` of each module's own chart, which labels pods `app:
 # {{ .Chart.Name }}`.
 #
-# On a cluster that DOES enforce this, verify with:
+# Verify with:
 #
 #   kubectl -n yadgar get pod -l app.kubernetes.io/name=valkey
 #   kubectl -n yadgar get pod -l app=gateway
