@@ -1,0 +1,173 @@
+# The edge's ingress allow-list (ADR-0685, ledger 896). The seventh and last of
+# the module ingress policies, and the one whose blast radius is the whole
+# estate: get it wrong and every external call to yadgar times out.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHY THIS FILE IS HERE RATHER THAN IN gateway's OWN CHART
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# COUPLING LOCALITY (ADR-0685). Rule 1's selector is DERIVED from another
+# object's name rather than chosen: `gateway.envoyproxy.io/owning-gateway-name:
+# edge` is derived from `metadata.name` on the `edge` Gateway in
+# infra/tls/gateway.yaml (line 61 as of this commit), and
+# `owning-gateway-namespace: yadgar` from `metadata.namespace` on the next line.
+# Envoy Gateway stamps both onto the data-plane pods it creates. A selector
+# derived from another object's name belongs in the same repository as that
+# object, so that renaming the object and updating the selector are ONE
+# reviewable diff.
+#
+# THE RENAME TRAP, AND NOTHING REFUSES IT. Rename the Gateway and these labels
+# change with it, this allow-list matches no pod, and every external call starts
+# timing out. A NetworkPolicy whose `from` selects nothing is accepted by the API
+# server, listed by `kubectl get netpol` and printed in full by `kubectl
+# describe` — it looks exactly like a working policy. ADR-0685 records that this
+# estate has no control that refuses such a policy, and leaves it unclosed. The
+# placement makes the rename one diff; infra/tls/gateway.yaml carries the
+# reciprocal cross-reference, so whoever renames the Gateway is told to come
+# here. Neither is a mechanism that refuses the mismatch.
+#
+# Verify both selectors match real pods, because a typo here is silent:
+#
+#   kubectl -n yadgar get pod -l app=gateway
+#   kubectl -n envoy-gateway-system get pod \
+#     -l app.kubernetes.io/name=envoy,gateway.envoyproxy.io/owning-gateway-name=edge
+#
+# Empty output from either means this policy protects nothing.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# WHAT A NETWORK CONTROL BUYS HERE THAT AUTHENTICATION CANNOT
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# THE PRE-AUTHENTICATION LOGIN THROTTLE IS KEYED ON THE TCP PEER ADDRESS in the
+# shipped configuration, and that is the whole increment. `YADGAR_TRUSTED_PROXY_
+# HOPS` is present with no value on the live pod, so it is the empty string,
+# which resolves to `TrustBoundary::Undeclared`. `Source::resolve` returns
+# `Observed(peer)` for Undeclared, the gate sends `Observed` to the unattributed
+# bucket, and that bucket's key is a sha256 of the peer address. So any pod that
+# can dial `gateway:8080` directly is its OWN peer and receives its OWN fresh
+# budget against the login route: N pods are N independent budgets, and
+# `YADGAR_LOGIN_UNATTRIBUTED_RATE_LIMIT=10:100` is per-peer rather than
+# per-cluster. No application-layer change closes that, because the only control
+# that can constrain WHO BECOMES A PEER is a network-layer one.
+#
+# THIS IS THE ONLY CONTROL AT THIS HOP, NOT THE SECOND ONE. The `edge` listener
+# is `tls.mode: Terminate` and the pod runs `LISTEN=0.0.0.0:8080`, so the hop is
+# CLEARTEXT; no BackendTLSPolicy, BackendTrafficPolicy or ClientTrafficPolicy
+# exists (all three checked live, 2026-09-14, and all three empty). That is why
+# ADR-0594's equal-controls framing does not reach this hop.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# BOTH RULES IN ONE COMMIT, AND WHY ADR-0685 MAKES THAT A RULE
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A NetworkPolicy with ANY ingress rule DENIES every port it does not name. So
+# rule 1 without rule 2 drops Prometheus' scrape — and the scrape is the
+# instrument that would reveal a wrong rule 1. Staging them apart ships an
+# interval in which the failure is invisible in exactly the thing that shows it.
+#
+# It would also stop the autoscaler, silently. `ScaledObject/gateway` is a
+# `prometheus` trigger whose query is `sum(rate(yadgar_calls_total{service=
+# "gateway", outcome="OK"}[2m])) / clamp_min(count(up{app="gateway"}), 1)`, so a
+# dropped scrape ends autoscaling with the Deployment left wherever it was.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# TWO PORTS, AND NOTHING ELSE IS REACHABLE
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Measured on the live pod, 2026-09-14: `LISTEN=0.0.0.0:8080`,
+# `METRICS_LISTEN=0.0.0.0:9090`, one declared `containerPort` (8080, named
+# `http`), and no third listener.
+#
+# NO DNAT TRANSLATION APPLIES HERE, and that is worth saying because the sibling
+# file next door needed the opposite. The `gateway` Service is `port 8080 →
+# targetPort http → containerPort 8080` — the same number on both sides — so a
+# rule naming 8080 is right whether the CNI evaluates before or after
+# translation. infra/estate-front/networkpolicy.yaml rule (b) had to name 10443
+# because the EDGE Service translates `443 → 10443`. That hazard is absent here;
+# do not copy the 10443 shape across.
+#
+# THE READINESS PROBE NEEDS NO RULE. It is a `tcpSocket` on `http`, dialled by
+# the kubelet from the NODE. Probe traffic does not originate from a pod, so no
+# pod-selector ingress rule applies to it (ADR-0592). The corollary is the
+# dangerous half, and it is the reason the negative test exists: A PROBE THAT
+# KEEPS PASSING IS NO EVIDENCE THIS POLICY IS CORRECT.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  namespace: yadgar
+spec:
+  podSelector:
+    matchLabels: { app: gateway }
+  policyTypes: [Ingress]
+  ingress:
+    # RULE 1 — THE ENVOY DATA PLANE, ON THE SERVING PORT.
+    #
+    # ONE `from` ELEMENT CARRYING BOTH SELECTORS, WHICH MEANS **AND**. Two
+    # separate list items would mean OR — "any pod in envoy-gateway-system" OR
+    # "any pod anywhere carrying these labels" — which is far broader than
+    # intended and reads as correct. infra/estate-front/networkpolicy.yaml rule
+    # (b) already uses this AND form against these same labels, and explains it
+    # there too.
+    #
+    # THE LABELS ARE THE SELECTOR AND THE Service NAME IS NOT. The live objects
+    # are `envoy-yadgar-edge-a2648de2`, whose suffix is a hash that changes when
+    # the Gateway is recreated. The labels carry no hash.
+    #
+    # `owning-gateway-namespace` ANSWERS "WHICH Gateway OWNS THIS PROXY", which
+    # is a different question from the `namespaceSelector`'s "WHERE DOES THE
+    # PROXY RUN". Both are needed and neither substitutes for the other: the
+    # proxies run in envoy-gateway-system and are owned by a Gateway in yadgar.
+    #
+    # THE SET IS THE MINIMAL SUFFICIENT ONE, AND IT IS CHOSEN TO MATCH THE
+    # POLICY NEXT DOOR EXACTLY. The live pods also carry
+    # `app.kubernetes.io/component: proxy` and
+    # `app.kubernetes.io/managed-by: envoy-gateway`; both are redundant once
+    # `owning-gateway-name` is present, because the only pods Envoy Gateway
+    # stamps with an owning-gateway are the proxies it manages. Using the same
+    # triple as estate-front-egress is worth more than a fourth label: two
+    # allow-lists naming the same pods with different selectors is a drift that
+    # nothing would catch.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: envoy-gateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: envoy
+              gateway.envoyproxy.io/owning-gateway-name: edge
+              gateway.envoyproxy.io/owning-gateway-namespace: yadgar
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # RULE 2 — PROMETHEUS, ON THE METRICS PORT. Not optional, and not a later
+    # commit; see the header for why the two land together.
+    #
+    # NAMESPACE ONLY, WITH NO podSelector, which is the shape the other six
+    # module policies already use — `iam-ingress`'s second rule is this rule
+    # verbatim, and keeping the seventh identical to the six means a reviewer
+    # compares one thing.
+    #
+    # PROMETHEUS SCRAPES THE POD IP, CROSS-NAMESPACE, which is what makes a
+    # namespaceSelector the thing that has to allow it. Confirmed in the live
+    # `prometheus-server` ConfigMap rather than taken on trust: the
+    # `kubernetes-pods` job keeps targets on
+    # `__meta_kubernetes_pod_annotation_prometheus_io_scrape` and then builds
+    # `__address__` by joining
+    # `__meta_kubernetes_pod_annotation_prometheus_io_port` to
+    # `__meta_kubernetes_pod_ip`. The gateway pod carries `prometheus.io/scrape:
+    # "true"` and `prometheus.io/port: "9090"`, and the live target's `instance`
+    # label reads `10.244.1.92:9090` — the POD address, not the Service's. A rule
+    # naming the Service would allow nothing.
+    #
+    # 9090 IS NOT A DECLARED `containerPort`, AND THAT CHANGES NOTHING. A
+    # NetworkPolicy port is the packet's destination port; a `containerPort` is
+    # documentation. The process listens on 9090 either way.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 9090

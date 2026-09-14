@@ -26,6 +26,35 @@
 # from the DNS root zone for private use and is special-cased by nothing. The
 # reasoning, and the measurement it rests on, are recorded in full on the
 # Certificate beside this file.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# RENAMING THIS Gateway BREAKS TWO ALLOW-LISTS, AND NOTHING WILL REFUSE THE
+# MISMATCH
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `metadata.name` and `metadata.namespace` below are not only this object's
+# identity. Envoy Gateway DERIVES two labels from them and stamps them onto every
+# data-plane pod it creates for this Gateway:
+# `gateway.envoyproxy.io/owning-gateway-name` and
+# `gateway.envoyproxy.io/owning-gateway-namespace`.
+#
+# TWO NetworkPolicies SELECT THOSE PODS BY THOSE LABELS:
+#
+# - infra/network-policies/gateway-ingress.yaml — the edge's ingress allow-list,
+#   and the ONLY control at the gateway hop (ADR-0685). Rename this Gateway and
+#   that allow-list matches no pod, so EVERY EXTERNAL CALL TIMES OUT — while both
+#   gateway pods stay Ready with zero restarts, the EndpointSlice keeps both
+#   addresses, and nothing is logged.
+# - infra/estate-front/networkpolicy.yaml rule (b) — the CI runner's only
+#   permitted route to the edge.
+#
+# A NetworkPolicy whose selector matches nothing is accepted by the API server,
+# listed by `kubectl get netpol` and printed in full by `kubectl describe`.
+# Nothing in this estate refuses it; ADR-0685 records that as unclosed, and only
+# a negative test finds it. ADR-0685 places gateway-ingress.yaml in THIS
+# repository precisely so that the rename and the allow-list are ONE reviewable
+# diff. If you change either of the two lines below, change both of those files
+# in the same commit.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
