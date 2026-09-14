@@ -13,12 +13,17 @@
 # so any peer with pod-network access to `iam-db:50051` can supply an arbitrary
 # one and read every tenant's data. ADR-0516 rules that the connection itself
 # must be authenticated, and rules OUT making that a NetworkPolicy's job: a
-# NetworkPolicy is enforced by the CNI, so the same manifest protects an EKS
-# deployment and protects nothing on kind — a control that keeps working while
+# NetworkPolicy is enforced by the CNI, so the same manifest can protect one
+# cluster and protect nothing on the next — a control that keeps working while
 # it stops protecting, which is D80's more dangerous failure mode. A client
 # certificate is checked by the server itself, so it holds identically
-# everywhere. (A NetworkPolicy still ships, as a second layer; see
-# infra/network-policies/.)
+# everywhere.
+#
+# THIS USED TO SAY "protects nothing on kind", and that example was false from
+# ledger 684 onward — kindnetd enforces NetworkPolicy. The ARGUMENT never rested
+# on that example, which is why it stands unchanged. A NetworkPolicy still ships
+# as a second layer, and on this cluster it is enforced; see
+# infra/network-policies/.
 #
 # ── ONE AUTHORITY, AND WHAT REPLACES THE SECOND ONE ─────────────────────────
 # THIS IS THE DECISION THE REMAINING CARS BUILD ON, so it is argued here rather

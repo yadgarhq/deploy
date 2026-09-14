@@ -108,8 +108,11 @@ spec:
             # rewrite everything in here: D74's token buckets (reset one to grant
             # unlimited capacity, or empty one to throttle a named person), D18's
             # epoch counters, D29's conversation tokens and D46's throttle
-            # counters. There was no NetworkPolicy either, and on the reference
-            # CNI there could not usefully be one — see infra/network-policies/.
+            # counters. There was no NetworkPolicy either. This comment used to
+            # add "and on the reference CNI there could not usefully be one",
+            # which was false from ledger 684 onward and is corrected in ledger
+            # 896: kindnetd does enforce NetworkPolicy, and the policy in
+            # infra/network-policies/ is a live second layer.
             #
             # `requirepass` is enforced by the SERVER, so it holds on every CNI
             # and on every platform, which is also what D80 asks for. That is why

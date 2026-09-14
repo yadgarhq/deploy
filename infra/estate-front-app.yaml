@@ -13,9 +13,12 @@
 # nothing — but ordering them means a check run straight after a sync answers
 # the question rather than racing it.
 #
-# **NOTHING IN networkpolicy.yaml IS ENFORCED ON THIS CLUSTER.** kindnet
-# implements no NetworkPolicy. Read that file before treating the runner as
-# confined; the gap is tracked as `yadgarhq/docs` ledger 614, due 2026-10-03.
+# **THE CNI DOES IMPLEMENT NetworkPolicy.** This comment claimed the opposite
+# until ledger 896; that claim was false from ledger 684 onward, and kindnetd
+# v20260528-9350166c both watches and enforces NetworkPolicy (twelve measured
+# drops, ledger 511). What is NOT measured is the EGRESS half, which is all
+# networkpolicy.yaml contains — so read that file before treating the runner as
+# confined OR as unconfined. Ledger 614 was filed on the premise that has gone.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

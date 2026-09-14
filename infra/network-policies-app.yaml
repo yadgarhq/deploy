@@ -1,11 +1,16 @@
 # Network policies for the shared infrastructure (ledger 518).
 #
-# **UNENFORCED ON THE REFERENCE CLUSTER.** kind's CNI is kindnet, which does not
-# implement NetworkPolicy: these objects are accepted, displayed and never
-# evaluated. What actually authenticates the shared cache and the shared broker
-# is `requirepass` in infra/valkey/valkey.yaml and the `authorization` block in
-# infra/nats.yaml. Read infra/network-policies/shared-infrastructure.yaml before
-# treating anything here as protection.
+# **ENFORCED ON THE REFERENCE CLUSTER.** This comment said "UNENFORCED … kind's
+# CNI is kindnet, which does not implement NetworkPolicy" until ledger 896. That
+# was false and had been since ledger 684: kindnetd v20260528-9350166c watches
+# NetworkPolicy objects and drops what they do not allow, and ledger 511 measured
+# twelve such drops across six module policies.
+#
+# What authenticates the shared cache and the shared broker is still `requirepass`
+# in infra/valkey/valkey.yaml and the `authorization` block in infra/nats.yaml —
+# server-side, so it holds on every CNI. These objects are the second layer, and
+# they are a live one. Read infra/network-policies/shared-infrastructure.yaml for
+# the measurements.
 #
 # ITS OWN Application rather than a file inside infra/valkey/, because the
 # policies span two workloads — one of which, NATS, is a Helm Application with no
