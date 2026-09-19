@@ -45,19 +45,34 @@
 #
 # THESE ARE MOUNTED AND READ, and this paragraph previously said they were not.
 # Every one of the SEVEN module charts — gateway, iam, iam-db, task, task-db,
-# project, project-db — mounts under `/etc/yadgar/config`, and the knobs reach the
-# processes from those files. The old text claimed "the five services read the
-# rotation schedule from environment variables", which is wrong three ways: there
-# are seven services, not five; they mount rather than read env; and
-# `yadgar-lifecycle` reads NO environment variable at all — `Schedule::from_env`
-# and its siblings were deleted in lifecycle v0.2.0, which ledger 602 measured.
-# The migration the old text was waiting on has happened.
+# project, project-db — used to mount its OWN per-service ConfigMap from this
+# chart, in addition to `shared`. Each has since dropped that per-service mount:
+# `gateway` now renders its own ConfigMap `gateway-knobs` from its own chart
+# (gateway#92, v0.9.49 — verified live in namespace `yadgar`) instead of pulling
+# one from here, and the other six dropped their mount outright (iam#83,
+# iam-db#70, task#67, task-db#76, project#22, project-db#45, all merged and
+# rolled — every `config-<module>` volume is gone from the live Deployments).
+# So all seven module charts mount exactly ONE object this chart still owns,
+# `shared`, under `/etc/yadgar/config/shared`. (The earlier text this paragraph
+# replaced claimed "the five services read the rotation schedule from
+# environment variables", which was wrong three ways: there were seven
+# services, not five; they mounted rather than read env; and `yadgar-lifecycle`
+# reads NO environment variable at all — `Schedule::from_env` and its siblings
+# were deleted in lifecycle v0.2.0, which ledger 602 measured.)
 #
-# NINE ConfigMaps, not seven. The template globs `chart/config/*.yaml`, which
-# holds `shared` plus one per service: audit, gateway, iam, iam-db, project,
-# project-db, task, task-db. Counted by rendering the published chart, not by
-# reading this comment — `audit` has no service and no reader yet (ADR-0574), and
-# that is what a stale count hides.
+# TWO ConfigMaps, not nine and not seven. The template globs
+# `chart/config/*.yaml`. Per ADR-0740, a configuration document moves into its
+# reader's own chart once exactly one service reads it, and stays in this
+# shared chart only when more than one service reads it, or none does yet.
+# `shared.yaml` stays because every service reads it. `audit.yaml` stays
+# because its reader count is ZERO, not one — no audit module exists yet to
+# own it, so ADR-0740's move-it-to-its-reader rule has no destination for it.
+# The seven per-service documents this chart used to also hold (gateway, iam,
+# iam-db, task, task-db, project, project-db) are gone: gateway's knob moved
+# into gateway's own chart per the paragraph above, and a pull request in
+# `yadgarhq/config` deletes the other six now-unmounted documents. Recount by
+# listing `chart/config/*.yaml` in the rendered chart, not by trusting this
+# comment.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
