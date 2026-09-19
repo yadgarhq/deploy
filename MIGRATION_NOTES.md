@@ -1946,9 +1946,9 @@ dispatched run's job to show, by the `imageID` check in §1.
 ## The configuration repository, and the two-step cut-over that follows (ADR-0569, ADR-0570)
 
 **NOTHING TO RUN FOR THE FIRST STEP.** `infra/config-app.yaml` points Argo at
-`yadgarhq/config`, which renders seven ConfigMaps into the `yadgar` namespace at
-sync wave -12. No pod mounts them yet, so a sync of this change adds objects and
-rolls nothing.
+`yadgarhq/config`, which rendered seven ConfigMaps into the `yadgar` namespace at
+sync wave -12 when this step landed. No pod mounted them yet, so a sync of this
+change added objects and rolled nothing. (The count has moved since — ADR-0740.)
 
 **Why they land before anything reads them.** ADR-0569 gives a configuration knob
 one source, no compiled-in default, and a refusal to boot when it is absent. A
