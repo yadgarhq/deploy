@@ -3,10 +3,21 @@
 #
 # A FOREIGN `repoURL`, and the only Application in this directory pointing at a
 # yadgarhq repository that is not this one. That is deliberate and it is what
-# ADR-0569 asks for: the settings live in ONE repository an installation clones
-# and edits, rather than scattered through the deployment repository mixed in
-# with infrastructure. Adopting this estate means forking `yadgarhq/config` and
-# changing the line below, and nothing else.
+# ADR-0569 asks for: the settings live in ONE repository rather than scattered
+# through the deployment repository mixed in with infrastructure.
+#
+# DO NOT COPY THIS FILE TO ADOPT THE ESTATE, and an earlier version of this
+# comment said the opposite. It said adopting meant FORKING `yadgarhq/config`.
+# ADR-0705 reverses exactly that: an installation REFERENCES the configuration
+# chart as a pinned OCI artifact from its own GitOps repository and clones
+# nothing. The worked example an adopter copies is `example/application.yaml` in
+# `yadgarhq/config`, which is single-source against
+# `oci://ghcr.io/yadgarhq/charts/config` at a pinned version.
+#
+# THIS FILE IS THE OTHER SHAPE ON PURPOSE. It tracks `main` by a git path under
+# D55 so a merge in `yadgarhq/config` reaches this reference cluster on the next
+# reconciliation. That is right for the estate that OWNS the chart and wrong for
+# an installation consuming it, which pins a version and bumps it deliberately.
 #
 # HERE RATHER THAN IN `yadgarhq/argocd`. That repository holds Argo's own values
 # and the module generator; `root.yaml`'s include glob is
@@ -32,12 +43,21 @@
 # estate when it is merely late, so "before" here is ordering rather than
 # preference. Modules are at wave 10.
 #
-# NOTHING MOUNTS THESE YET. The five services read the rotation schedule from
-# environment variables set by their own charts; moving them is a second step,
-# blocked on a `yadgar-lifecycle` tag that only a merge can cut. See
-# MIGRATION_NOTES.md. Until then this Application renders seven ConfigMaps that
-# nothing reads, which is a deliberate ordering choice: the configuration must be
-# in the cluster BEFORE the first service that refuses to boot without it.
+# THESE ARE MOUNTED AND READ, and this paragraph previously said they were not.
+# Every one of the SEVEN module charts — gateway, iam, iam-db, task, task-db,
+# project, project-db — mounts under `/etc/yadgar/config`, and the knobs reach the
+# processes from those files. The old text claimed "the five services read the
+# rotation schedule from environment variables", which is wrong three ways: there
+# are seven services, not five; they mount rather than read env; and
+# `yadgar-lifecycle` reads NO environment variable at all — `Schedule::from_env`
+# and its siblings were deleted in lifecycle v0.2.0, which ledger 602 measured.
+# The migration the old text was waiting on has happened.
+#
+# NINE ConfigMaps, not seven. The template globs `chart/config/*.yaml`, which
+# holds `shared` plus one per service: audit, gateway, iam, iam-db, project,
+# project-db, task, task-db. Counted by rendering the published chart, not by
+# reading this comment — `audit` has no service and no reader yet (ADR-0574), and
+# that is what a stale count hides.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
