@@ -67,12 +67,13 @@
 # `shared.yaml` stays because every service reads it. `audit.yaml` stays
 # because its reader count is ZERO, not one — no audit module exists yet to
 # own it, so ADR-0740's move-it-to-its-reader rule has no destination for it.
-# The seven per-service documents this chart used to also hold (gateway, iam,
-# iam-db, task, task-db, project, project-db) are gone: gateway's knob moved
-# into gateway's own chart per the paragraph above, and a pull request in
-# `yadgarhq/config` deletes the other six now-unmounted documents. Recount by
-# listing `chart/config/*.yaml` in the rendered chart, not by trusting this
-# comment.
+# The seven per-service documents this chart once also held — gateway, iam,
+# iam-db, task, task-db, project, project-db — have no reader left in this
+# chart: `gateway` renders its own `gateway-knobs` ConfigMap from its own
+# chart now (gateway#92), and the other six dropped their per-service mount
+# outright (iam#83, iam-db#70, task#67, task-db#76, project#22, project-db#45).
+# Recount by listing `chart/config/*.yaml` in the rendered chart, not by
+# trusting this comment.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
