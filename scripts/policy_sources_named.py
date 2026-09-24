@@ -61,6 +61,16 @@ NAMESPACE_LABEL = "kubernetes.io/metadata.name"
 # pull request deletes the `from` from the monitoring rule and this equality
 # goes red, naming the port. An expectation of `set()` is the strongest form
 # this gate takes, not the absence of one.
+#
+# `estate-front-egress` IS THE EXCEPTION, AND IT IS STATED RATHER THAN LEFT TO
+# BE READ OFF THE DICT. It declares `policyTypes: [Ingress, Egress]` with NO
+# `ingress` key — a deny-all for ingress — and four `egress` rules. So
+# `ingress_rules` returns nothing for it and its `set()` here passes without
+# examining anything. It is listed so that renaming or deleting it reddens the
+# floor below, NOT because its egress is checked: this gate asks only "does
+# every INGRESS rule name a source". The mirror question for egress — a `to`-less
+# rule, which admits every destination the same way — is a separate gate that
+# nothing in this repository asks yet.
 EXPECTED_ALLOW_ALL_PORTS: dict[str, set[int]] = {
     "valkey-ingress": set(),
     "nats-ingress": set(),
