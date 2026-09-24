@@ -129,12 +129,19 @@ spec:
       ports:
         - protocol: TCP
           port: 4222
-    # The monitoring port, from ANYWHERE in the namespace, and deliberately not
-    # narrowed. It is HTTP with no authorization and no secrets on it, the chart's
-    # startup, readiness and liveness probes all use it, and kubelet probes do not
-    # come from a pod this selector could name at all. Narrowing it to Prometheus
-    # would leave the probes to the CNI's treatment of host traffic, which is the
-    # thing that varies.
+    # The monitoring port, from ANYWHERE AT ALL, and deliberately not narrowed.
+    # This rule carries no `from`, unlike the sibling rules around it, and that
+    # is not a narrower scope — it is the widest one there is. An ingress rule
+    # whose `from` is absent or empty matches ALL sources: every namespace, and
+    # whatever else the cluster's CNI presents to this pod. Not "from anywhere
+    # in the namespace", which is what this comment used to say. It is HTTP
+    # with no authorization and no secrets on it, the chart's startup,
+    # readiness and liveness probes all use it, and a NetworkPolicy with any
+    # ingress rule denies every port it does not name, so naming only 4222
+    # would cut this endpoint. Narrowing it to Prometheus would leave the
+    # probes to the CNI's treatment of host traffic, which is the thing that
+    # varies — kubelet probes not being subject to pod-selector ingress rules
+    # is not itself a reason narrowing would be safe.
     - ports:
         - protocol: TCP
           port: 8222
