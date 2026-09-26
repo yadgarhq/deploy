@@ -79,10 +79,22 @@ PARENT_APPLICATION = "yadgar"
 TARGET_NAMESPACE = "yadgar"
 
 # C2's RUNG FOR THIS STEP. One rung per MERGE, not per step. 40 at step 0, 37
-# after step 3 deletes `infra/valkey/`'s two objects and `valkey-ingress`.
-# Whoever lands step 4 moves this to 34 in the same merge that deletes
-# `infra/databases/`, and the ladder lives in the plan's count register.
-EXPECTED_DEPLOY_TUPLES = 37
+# after step 3 deletes `infra/valkey/`'s two objects and `valkey-ingress`, 34
+# after merge A of `plans/the-mariadb-crs-into-the-chart.md` deletes
+# `infra/databases-app.yaml`. The ladder lives in the plan's count register.
+#
+# THE APPLICATION MOVES THIS NUMBER, NOT THE DIRECTORY, and the comment this
+# replaces said the opposite — it told whoever lands step 4 to move the rung
+# "in the same merge that deletes `infra/databases/`", which is merge B. D is
+# derived from Applications rather than from directories, so the three MariaDB
+# tuples leave D the moment this Application file goes, with `infra/databases/`
+# still sitting on disk. Measured 2026-09-26 against the pinned parent 0.2.38:
+# 37 before that deletion and 34 after it. Merge B then deletes the directory
+# and moves this rung by ZERO, which is why 34 appears twice in the ladder.
+#
+# SO THE LINE MOVES IN MERGE A'S OWN COMMIT. Deleting the Application without
+# moving it reddens C2 on the merge itself.
+EXPECTED_DEPLOY_TUPLES = 34
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
