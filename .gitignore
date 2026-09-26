@@ -3,3 +3,7 @@
 # that cover exists on one machine and reaches no other clone, no CI, and no
 # other contributor.
 .local-review/
+
+# pytest's bytecode cache. `scripts/tests/` became a package the moment it held
+# a suite, and the cache is a build artefact of running it.
+__pycache__/

@@ -2167,3 +2167,30 @@ the last `kind delete cluster` is not the current token.**
 (`estate-runner-github`'s ADR-0596 failure mode is a different bug — a
 rotation the ARC listener pod does not re-read — not this one; see "The
 `estate-front` runner" above.)
+
+## Make the two-owners gate required (`plans/retiring-the-deploy-copies.md`)
+
+`.github/workflows/ci.yaml` gained a `two-owners` job. It runs
+`scripts/tests/test_no_two_owners.py`, which renders the pinned parent chart at
+`infra/yadgar/values.yaml` and every surviving Application that installs into
+namespace `yadgar`, then asserts the two sets are disjoint. **That job blocks
+nothing until this step is taken**, for exactly the reason the runner-signature
+section above gives: the `main` ruleset requires one status check, `ci / passed`,
+and this job is not inside that aggregate.
+
+It cannot be a pre-commit hook. It pulls the parent from `ghcr.io` and renders
+`infra/nats.yaml`'s chart from `nats-io.github.io`, and a hook may not depend on
+a registry — the same line `runner_image_pinned.py` draws between its structural
+half and its signature half.
+
+**Why it matters more with each step.** The `yadgar` Application now carries
+`prune: true` and `selfHeal: true`. A pull request that flips a `platform.*`
+toggle without deleting the copy it duplicates puts two automated Applications on
+one object name, and they prune each other. The gate refuses exactly that pull
+request, and until it is required it only says so in a cross nobody has to read.
+
+Add `{ "context": "two-owners" }` beside `{ "context": "ci / passed" }` in the
+`required_status_checks` rule, using the read-then-replace shape the section
+above spells out in full. The context is the job id, with no `<caller> /` prefix,
+because this job is defined in this file rather than called from a reusable
+workflow.

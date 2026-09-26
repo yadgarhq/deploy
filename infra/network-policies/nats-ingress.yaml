@@ -1,4 +1,14 @@
-# Defence in depth for the shared cache and the shared broker (ledger 518).
+# Defence in depth for the shared broker (ledger 518).
+#
+# SPLIT OUT OF `shared-infrastructure.yaml`, AND THE SPLIT WAS FORCED BY A TOGGLE
+# RATHER THAN CHOSEN FOR TIDINESS. That file carried `valkey-ingress` and
+# `nats-ingress` together. `platform/chart/templates/ingress-policies.yaml` gates
+# the first on `platform.valkey.create` and the second on `platform.nats.create`,
+# and `plans/retiring-the-deploy-copies.md` flips those two at DIFFERENT steps —
+# valkey at step 3, NATS at step 6. Two objects whose toggles move at different
+# steps cannot share a file: leaving them together would put `valkey-ingress`
+# under two owners for the whole of steps 3, 4 and 5. The valkey half went with
+# step 3, which is the same merge that split this file.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # READ THIS FIRST: EVERYTHING IN THIS FILE IS ENFORCED ON THE REFERENCE CLUSTER
@@ -25,33 +35,31 @@
 #   policies, each dropping an unallowed peer at the 4s connect deadline while
 #   the allowed control connected at 0s.
 #
-# So a pod with no label here CANNOT open a connection to Valkey on 6379, and
+# So a pod with no label here CANNOT open a connection to the broker on 4222, and
 # this file may be read as protection, because it is protection.
 #
-# WHAT CLOSED TASK 518 IS STILL THE SERVER-SIDE HALF: `requirepass` on the cache
-# (infra/valkey/valkey.yaml) and the `authorization` block on the broker
-# (infra/nats.yaml). Those hold on every CNI and every platform, which is what
-# D80 asks for, and that ordering was right — the server-enforced control leads
-# and the policy follows. What has changed is only that the second layer is a
-# live one rather than a specification.
+# WHAT CLOSED TASK 518 IS STILL THE SERVER-SIDE HALF: the `authorization` block
+# on the broker (infra/nats.yaml). It holds on every CNI and every platform,
+# which is what D80 asks for, and that ordering was right — the server-enforced
+# control leads and the policy follows. What has changed is only that the second
+# layer is a live one rather than a specification.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 # KUBELET PROBES, AND WHY NO NODE CIDR RULE IS NEEDED
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Valkey's `livenessProbe` is a `tcpSocket` on 6379 dialled by the kubelet from
-# the NODE, and NATS' probes are `httpGet` on 8222. No rule below names either
-# source, and both keep passing: probe traffic does not originate from a pod, so
-# a pod-selector ingress rule never applies to it. That is ADR-0592, measured on
-# a valkey pod with `restartCount` 0 across 13 hours behind exactly these rules.
+# NATS' probes are `httpGet` on 8222, dialled by the kubelet from the NODE. No
+# rule below names that source and they keep passing: probe traffic does not
+# originate from a pod, so a pod-selector ingress rule never applies to it. That
+# is ADR-0592.
 #
-# THIS SECTION IS NOW LOAD-BEARING FOR THE BROKER, AND IT WAS NOT BEFORE. Until
-# the monitoring port was narrowed, 8222 carried no source restriction at all,
-# so the exemption bought NATS nothing — the probes were admitted the way every
-# other source was. Narrowing that rule makes the exemption the ONLY thing
-# keeping three `httpGet` probes alive on a healthy broker. Read this section as
-# a live dependency of the rule below, not as background. The argument beside
-# that rule carries the measurement; this is the pointer to it.
+# THIS SECTION IS LOAD-BEARING FOR THE BROKER, AND IT WAS NOT ALWAYS. Until the
+# monitoring port was narrowed, 8222 carried no source restriction at all, so the
+# exemption bought NATS nothing — the probes were admitted the way every other
+# source was. Narrowing that rule makes the exemption the ONLY thing keeping
+# three `httpGet` probes alive on a healthy broker. Read this section as a live
+# dependency of the rule below, not as background. The argument beside that rule
+# carries the measurement; this is the pointer to it.
 #
 # So no node CIDR is written here, because none is needed. The corollary is the
 # part worth carrying: A PASSING PROBE IS NO EVIDENCE THAT THIS POLICY IS ABSENT
@@ -70,44 +78,17 @@
 # protects nothing.** Enforcement does not make a typo visible — the estate has
 # no control that refuses a policy whose selector matches nothing (ADR-0685). So
 # every label below was read off rendered output rather than recalled:
-# `app.kubernetes.io/name: valkey` from the Deployment in
-# infra/valkey/valkey.yaml, `app.kubernetes.io/name: nats` from `helm template`
-# of the nats chart at the pinned version, and `app: gateway` / `app: iam` from
-# `helm template` of each module's own chart, which labels pods `app:
-# {{ .Chart.Name }}`.
+# `app.kubernetes.io/name: nats` from `helm template` of the nats chart at the
+# pinned version, and `app: gateway` / `app: iam` from `helm template` of each
+# module's own chart, which labels pods `app: {{ .Chart.Name }}`.
 #
 # Verify with:
 #
-#   kubectl -n yadgar get pod -l app.kubernetes.io/name=valkey
+#   kubectl -n yadgar get pod -l app.kubernetes.io/name=nats
 #   kubectl -n yadgar get pod -l app=gateway
 #
 # Empty output means the policy selects nothing and protects nothing.
----
-# THE ONE CONSUMER IS `gateway`, and that is measured rather than recalled: the
-# `redis` crate appears in exactly one Cargo.toml in the organisation, and it is
-# `gateway`'s. So this is a list of one rather than a shortcut.
-#
-# THE HEADER OF infra/valkey/valkey.yaml DESCRIBES MORE THAN THAT. It names D17's
-# row and query caches inside each twin, D29's conversation tokens and D46's
-# throttle counters — what the cache is FOR, not who dials it today. Each of those
-# arriving is a service that has to be added here.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: valkey-ingress
-  namespace: yadgar
-spec:
-  podSelector:
-    matchLabels: { app.kubernetes.io/name: valkey }
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - podSelector:
-            matchLabels: { app: gateway }
-      ports:
-        - protocol: TCP
-          port: 6379
----
+
 # TWO CONSUMERS NOW (gateway#17): `iam` — `invalidate.rs` — publishes D72's
 # cache invalidation, and `gateway` subscribes to it from its own
 # `invalidate.rs`. Each new consumer of the broker has to be added to this
