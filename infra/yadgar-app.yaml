@@ -29,13 +29,16 @@
 # NO `Replace=true` AND NO `ServerSideApply=true`, per D83: either one would let
 # an immutable-field change become a delete-and-recreate of a live Service.
 #
-# NO `ignoreDifferences` BLOCK YET. `infra/databases-app.yaml` carries one, on
-# the two `generate` pointers the mariadb-operator writes back onto the spec it
-# reconciles. It belongs here only once this Application renders the three
-# MariaDB CRs, which is merge B of `plans/the-mariadb-crs-into-the-chart.md`.
-# Its absence today is correct rather than forgotten: this render contains no
-# MariaDB, because the three `database.create` toggles stay false in
-# `infra/yadgar/values.yaml`.
+# THE `ignoreDifferences` BLOCK IS HERE NOW, AND MERGE B OF
+# `plans/the-mariadb-crs-into-the-chart.md` IS WHAT MOVED IT. It came verbatim
+# from `infra/databases-app.yaml`, which merge A deleted, and it matches the
+# block the chart's own `example/application.yaml` carries from 0.2.37 — two
+# `generate` pointers, one entry, no `name`, so it holds for all three
+# databases. It belongs here because this Application now RENDERS the three
+# MariaDB CRs: the three `database.create` toggles are true in
+# `infra/yadgar/values.yaml` as of the same merge. Without it the operator's
+# writeback of the generated credential's name reads as drift, `selfHeal`
+# reverts it, the operator writes it again, and the two loop.
 #
 # NO `argocd.argoproj.io/sync-wave`, WHICH IS WHAT THE PLAN SPECIFIES AND IS A
 # DIFFERENCE FROM WHAT THIS REPLACES. The `yadgar-modules` ApplicationSet
@@ -104,9 +107,9 @@ spec:
       #
       # `0.2.37` IS NOT SKIPPED BY THIS LINE, IT IS PASSED THROUGH. Its only
       # change is an `ignoreDifferences` block added to `example/application.yaml`
-      # — the file an adopter COPIES, which this chart does not render. The same
-      # block does not belong in THIS Application yet, for the reason the header
-      # above already gives: this render contains no MariaDB.
+      # — the file an adopter COPIES, which this chart does not render. THIS
+      # Application now carries the same block itself, below, because this
+      # render does contain the three MariaDB CRs as of merge B.
       targetRevision: 0.2.38
       helm:
         valueFiles:
@@ -120,3 +123,22 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true]
+
+  # MOVED VERBATIM FROM `infra/databases-app.yaml`, WHICH MERGE A DELETED.
+  #
+  # The operator writes the generated credential's name back onto the spec it
+  # reconciles. Argo sees its own manifest differ from the live object and
+  # reports OutOfSync forever, then selfHeal reverts it — a sync loop that
+  # looks like drift and is actually the operator doing its job.
+  #
+  # ONE ENTRY COVERS ALL THREE DATABASES. Argo selects `ignoreDifferences` by
+  # group and kind with `name` optional, so naming none of the three is what
+  # makes it hold for each of them. This is the same block the chart's own
+  # `example/application.yaml` carries from 0.2.37 — the adopter path and this
+  # organisation's path agree on it rather than diverging.
+  ignoreDifferences:
+    - group: k8s.mariadb.com
+      kind: MariaDB
+      jsonPointers:
+        - /spec/rootPasswordSecretKeyRef/generate
+        - /spec/passwordSecretKeyRef/generate
