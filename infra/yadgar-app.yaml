@@ -61,23 +61,53 @@ spec:
     - repoURL: ghcr.io/yadgarhq/charts
       chart: yadgar
       # PINNED BY HAND, ONE LINE PER PULL REQUEST, AND NOTHING WRITES IT.
-      # Re-verified 2026-09-26 by the plan's step 0: `0.2.36` pins gateway
-      # 0.9.52, iam 0.8.44, iam-db 0.7.46, project 0.1.19, project-db 0.3.10,
-      # task 0.5.30, task-db 0.6.34, platform 0.1.12 and config 0.2.0; those
-      # seven image digests equal `yadgarhq/argocd`'s `versions/*.yaml` and equal
-      # every module pod's `imageID` on this cluster; `config` is 0 commits ahead
-      # of its pin; and the `push_validation` job for the tag's commit is
-      # `success`. That last read is the only gate this pin has, because
-      # `ci-release.yaml`'s `release` job carries no `needs:` on it.
+      # Measured 2026-09-26 on the pulled artifact
+      # (digest sha256:38847bbbdda01657f3a2d259c423e4c1c9e36a3310c8d7698c0b380ac18d3b32):
+      # `0.2.38` pins gateway 0.9.52, iam 0.8.44, iam-db 0.7.46, project 0.1.19,
+      # project-db 0.3.10, task 0.5.30, task-db 0.6.34, config 0.2.0 and
+      # platform 0.1.13. Only the LAST of those moved from `0.2.36`; the other
+      # eight are byte-for-byte the subcharts this estate already runs, so the
+      # step-0 reading that those seven image digests equal `yadgarhq/argocd`'s
+      # `versions/*.yaml` and equal every module pod's `imageID` carries over
+      # unchanged. `config` is 0 commits ahead of its pin, re-read the same day.
+      # `push_validation` for the tag's commit `841e177` is `success` — that read
+      # is the only gate this pin has, because `ci-release.yaml`'s `release` job
+      # carries no `needs:` on it.
       #
-      # `0.2.36` SPECIFICALLY, and an earlier parent is not interchangeable. It
-      # is the first parent carrying all three hardened `-db` charts — 0.2.34
-      # carries one and 0.2.35 two — where hardened means the MariaDB CR renders
-      # `helm.sh/resource-policy: keep`, `argocd.argoproj.io/sync-options:
-      # Prune=false` and an OMITTABLE `storage.className`. The values file's
-      # three `className: standard` lines are meaningless against a parent
-      # without them.
-      targetRevision: 0.2.36
+      # WHY THIS BUMP MOVES NOTHING THIS CLUSTER RENDERS, AND WHY THAT WAS
+      # PROVED RATHER THAN ARGUED. `prune: true` and `selfHeal: true` are live
+      # below, so a parent rendering FEWER objects deletes the difference
+      # unattended. The gate is therefore a render diff BEFORE the merge, not an
+      # inspection after. `infra/yadgar/values.yaml` was templated against both
+      # pulled artifacts on helm 3.20.2 AND 4.3.0, `--namespace yadgar`,
+      # `--kube-version v1.36.1`, and the six `--api-versions` this chart's
+      # `require-api` helpers and capability guards name: 48 objects on all four
+      # renders, the `apiGroup|Kind|name` sets identical, and the manifests
+      # BYTE-IDENTICAL. Nothing added, nothing pruned.
+      #
+      # WHAT `platform` 0.1.13 ACTUALLY CARRIES is the fix for the probe Jobs
+      # that fail against a healthy cluster — both templates now set a
+      # `USER_AGENT` that does not begin with `curl` and ask for `pretty=false`,
+      # so the API server stops pretty-printing at a line matcher. It changes
+      # this render by ZERO objects because both templates are guarded on
+      # `preflight.enabled`, which `infra/yadgar/values.yaml` holds FALSE. That
+      # shield's removal is a separate decision and is not taken here.
+      #
+      # `0.2.36` OR LATER SPECIFICALLY, and an earlier parent is not
+      # interchangeable. 0.2.36 is the first parent carrying all three hardened
+      # `-db` charts — 0.2.34 carries one and 0.2.35 two — where hardened means
+      # the MariaDB CR renders `helm.sh/resource-policy: keep`,
+      # `argocd.argoproj.io/sync-options: Prune=false` and an OMITTABLE
+      # `storage.className`. The values file's three `className: standard` lines
+      # are meaningless against a parent without them. All three `-db` pins are
+      # unchanged at `0.2.38`, so that property holds here too.
+      #
+      # `0.2.37` IS NOT SKIPPED BY THIS LINE, IT IS PASSED THROUGH. Its only
+      # change is an `ignoreDifferences` block added to `example/application.yaml`
+      # — the file an adopter COPIES, which this chart does not render. The same
+      # block does not belong in THIS Application yet, for the reason the header
+      # above already gives: this render contains no MariaDB.
+      targetRevision: 0.2.38
       helm:
         valueFiles:
           - $self/infra/yadgar/values.yaml
