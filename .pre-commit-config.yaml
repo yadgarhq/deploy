@@ -96,3 +96,23 @@ repos:
         additional_dependencies: ["pyyaml==6.0.3"]
         always_run: true
         pass_filenames: false
+
+      # LOCAL FOR THE FIRST OF THE TWO REASONS ABOVE: this repository is the only
+      # one in the estate declaring a `kind: NetworkPolicy` as a plain manifest.
+      # `yadgarhq/platform` asks the same question of its chart, in
+      # `scripts/tests/test_shared_infrastructure.py`, and the matcher functions
+      # here are COPIED from there rather than re-derived (ADR-0679) — a second
+      # derivation of "what counts as a from-less rule" is a second set of bugs.
+      #
+      # THE SAME `always_run` / `pass_filenames: false` PAIR AS THE HOOK ABOVE,
+      # and for the same reason it gives: the absence of the rule is the failure,
+      # so the changed-file list cannot be the input. Deleting the 8222 rule's
+      # `from` and deleting the whole policy must both redden, and a hook handed
+      # only what changed cannot see the second.
+      - id: policy-sources-named
+        name: every ingress rule names a source, and 8222 names this namespace
+        entry: python scripts/policy_sources_named.py
+        language: python
+        additional_dependencies: ["pyyaml==6.0.3"]
+        always_run: true
+        pass_filenames: false
