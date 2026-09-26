@@ -131,17 +131,77 @@ project-db:
       storage:
         className: standard
 
-# ── THE PLATFORM LAYER, OFF ──────────────────────────────────────────────────
-# This organisation already runs its own internal CA, its leaves, the Gateway
-# listener, Valkey and NATS out of `infra/`, so the parent must not render a
-# second copy. `false` is also the chart's own default; it is stated here because
-# a render this organisation measures must be reproducible from this file alone,
-# and because a later parent changing that default must not change this estate.
-# What happens to `infra/nats.yaml` is named in
-# `plans/retiring-the-deploy-copies.md`, not decided here. `infra/config-app.yaml`
-# is GONE as of this step, and that plan defers to this one for it: `config` is an
-# UNCONDITIONAL dependency of the parent, so the parent renders `ConfigMap/audit`
-# and `ConfigMap/shared` whatever this toggle says, and the two names collide from
-# the cutover's first sync.
+# ── THE PLATFORM LAYER, COMING ON ONE OBJECT AT A TIME ───────────────────────
+# EVERY `false` BELOW MARKS SOMETHING `deploy` STILL OWNS, and each one is moved
+# by the step of `plans/retiring-the-deploy-copies.md` that deletes the copy.
+# The plan's ordering is not a preference: every Application in `infra/` carries
+# `prune: true` and `selfHeal: true`, so a toggle flipped while its copy still
+# exists is two automated Applications pruning each other's objects. The deletion
+# and the flip are ONE merge, which makes that interval empty rather than short.
+# `scripts/tests/test_no_two_owners.py` is the gate that refuses the other order.
+#
+# THE CONVERSE DOES NOT HOLD, and reading it that way is a trap. A toggle that is
+# `true` does not mean `deploy` owns nothing — after the last step `deploy` still
+# owns five objects no parent toggle can render, and `preflight.enabled` is false
+# for a reason that has nothing to do with ownership.
+#
+# THE FALSES ARE STATED RATHER THAN INHERITED. They are also the chart's own
+# defaults; writing them here means a render this organisation measures is
+# reproducible from this file alone, and a later parent changing a default cannot
+# change this estate. `platform.enabled` true is what makes every one of them
+# load-bearing — until this step they were unreachable behind the dependency
+# `condition`, which is why they are written now rather than earlier.
+#
+# `platform.enabled: true` ADDS NO OBJECT BY ITSELF. Measured 2026-09-26 against
+# the pinned `yadgar:0.2.36`: this file renders 45 tuples, and this file with
+# `--set platform.enabled=true` renders the same 45. The two `valkey` keys below
+# take it to 48, and the three added are exactly `Deployment/valkey`,
+# `Service/valkey` and `NetworkPolicy/valkey-ingress`. That render carries ZERO
+# hook-annotated objects, which is what keeps `preflight` off the live estate's
+# sync at this step.
 platform:
-  enabled: false
+  enabled: true
+
+  # ── VALKEY: THE PARENT'S, AS OF STEP 3 ─────────────────────────────────────
+  # `infra/valkey-app.yaml`, `infra/valkey/` and the `valkey-ingress` half of
+  # `infra/network-policies/shared-infrastructure.yaml` were deleted in the merge
+  # that set this true.
+  valkey:
+    create: true
+
+  # ── STILL `deploy`'S ───────────────────────────────────────────────────────
+  # Each line names the step that moves it and the copy that has to go first.
+  internalCA:
+    create: false # step 5, with infra/internal-tls/
+  certificates:
+    create: false # step 5, with infra/internal-tls/
+  edgeTLS:
+    create: false # step 7, with infra/tls/certificate.yaml
+  gatewayListener:
+    create: false # step 7, with infra/tls/{gateway,gatewayclass,envoyproxy}.yaml
+  nats:
+    create: false # step 6, with infra/nats.yaml
+  bootstrap:
+    create: false # step 9, with infra/bootstrap/
+    iamKeys:
+      create: false # step 9, and the Secret it mints is unrecoverable
+
+  # THE OPERATORS RELEASE IS NOT THIS ORGANISATION'S PATH (ADR-0787). `infra/`
+  # installs cert-manager, KEDA, mariadb-operator, Envoy Gateway and Argo CD as
+  # Applications of their own, and no step of the retirement plan moves them.
+  operators:
+    create: false
+
+  # NOT IN THE RETIREMENT PLAN'S SCOPE, and off for a different reason from every
+  # toggle above: cost per sync, not ownership. It defaults TRUE in the chart —
+  # the one exception to that chart's default-false convention — so leaving it
+  # unstated would turn three PreSync hook Jobs on for this estate the moment a
+  # `platform.*.create` above resolves a probe. Measured 2026-09-26 on
+  # `platform` 0.1.12: the cert-manager and KEDA arms of `preflight`, and the
+  # whole post-install `envoy-gateway-probe`, FAIL on a healthy cluster. Their
+  # `condition_matches` parses the API server's answer as compact JSON, and the
+  # API server pretty-prints for any client whose `User-Agent` begins with
+  # `curl`, which those Jobs are. A failed PreSync hook fails the sync — measured
+  # the same day — so on a `selfHeal` Application that is a reconcile loop.
+  preflight:
+    enabled: false

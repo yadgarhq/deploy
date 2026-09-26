@@ -122,3 +122,52 @@ jobs:
       # as ImagePullBackOff.
       - name: the pinned digest carries CI's signature
         run: python3 scripts/runner_image_pinned.py --verify-signature
+
+  # THE TWO-OWNERS GATE (`plans/retiring-the-deploy-copies.md`), AND IT IS A NEW
+  # JOB RATHER THAN A LINE ADDED TO ONE ABOVE. It needs `helm` and network to
+  # `ghcr.io` and `nats-io.github.io`, and no job in this file had either.
+  #
+  # NOT A PRE-COMMIT HOOK, for the same reason `signature` is not one: a hook may
+  # not depend on a registry. `scripts/policy_sources_named.py` asks an offline
+  # question of the same tree and stays a hook.
+  #
+  # IT IS NOT A MERGE GATE YET, on the same terms the `signature` job states
+  # above: the `main` ruleset requires exactly `ci / passed`, this job is outside
+  # that aggregate, so a red cross here blocks nothing until the operator adds it.
+  # MIGRATION_NOTES.md carries that change.
+  #
+  # PULL REQUESTS ONLY. On `push` to main it would re-ask, against merged code,
+  # a question the pull request just answered.
+  two-owners:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: install PyYAML and pytest
+        run: |
+          python3 -m pip install --disable-pip-version-check \
+            "pyyaml==6.0.3" "pytest==8.4.2"
+
+      # NO REGISTRY CREDENTIAL. The parent chart and every module package are
+      # public, so the pull is anonymous — the same pull an adopter makes, which
+      # is the point of ADR-0786. The action digest is the one every other
+      # workflow in this organisation pins, so a supply-chain review of the
+      # estate reads one digest rather than two.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          # THE SAME HELM `yadgarhq/chart` RENDERS THE PARENT WITH. A render
+          # assertion that disagreed with the chart repository's own would be a
+          # second opinion about the same template.
+          version: v3.18.4
+
+      - name: no object in namespace yadgar has two owners
+        run: python3 -m pytest scripts/tests/test_no_two_owners.py -q

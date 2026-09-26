@@ -12,7 +12,7 @@ So the ports admitted from EVERY source are asserted separately, as an equality
 against a written-down expectation rather than as a ceiling — a ceiling passes
 when a from-less rule is added to a policy that had none.
 
-`infra/network-policies/shared-infrastructure.yaml`'s 8222 rule was the one
+`infra/network-policies/nats-ingress.yaml`'s 8222 rule was the one
 from-less rule in this repository until ledger 897 narrowed it, which is why
 this gate exists at the moment it does. `EXPECTED_ALLOW_ALL_PORTS` is empty for
 every policy now, and RED CASE (a) below is what stops that being vacuous.
@@ -71,8 +71,14 @@ NAMESPACE_LABEL = "kubernetes.io/metadata.name"
 # every INGRESS rule name a source". The mirror question for egress — a `to`-less
 # rule, which admits every destination the same way — is a separate gate that
 # nothing in this repository asks yet.
+#
+# `valkey-ingress` LEFT THIS DICT WITH THE POLICY ITSELF, at step 3 of
+# `plans/retiring-the-deploy-copies.md`. The parent chart renders it now, behind
+# `platform.valkey.create`, so this repository no longer declares it and a key
+# left here would make the floor below refuse a tree that is correct. Removing
+# the key is what keeps the floor a floor: three is now the number of policies
+# this repository declares, and a fourth going missing still reddens.
 EXPECTED_ALLOW_ALL_PORTS: dict[str, set[int]] = {
-    "valkey-ingress": set(),
     "nats-ingress": set(),
     "gateway-ingress": set(),
     "estate-front-egress": set(),

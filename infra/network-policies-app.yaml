@@ -6,16 +6,22 @@
 # NetworkPolicy objects and drops what they do not allow, and ledger 511 measured
 # twelve such drops across six module policies.
 #
-# What authenticates the shared cache and the shared broker is still `requirepass`
-# in infra/valkey/valkey.yaml and the `authorization` block in infra/nats.yaml —
-# server-side, so it holds on every CNI. These objects are the second layer, and
-# they are a live one. Read infra/network-policies/shared-infrastructure.yaml for
-# the measurements.
+# What authenticates the shared broker is still the `authorization` block in
+# infra/nats.yaml — server-side, so it holds on every CNI. These objects are the
+# second layer, and they are a live one. Read
+# infra/network-policies/nats-ingress.yaml for the measurements.
 #
-# ITS OWN Application rather than a file inside infra/valkey/, because the
-# policies span two workloads — one of which, NATS, is a Helm Application with no
-# directory of its own to put a manifest in. One Application for both keeps the
-# policy for a hop and the policy for its twin in one place.
+# THIS APPLICATION IS SHRINKING, one policy at a time. It held three; step 3 of
+# `plans/retiring-the-deploy-copies.md` retired `valkey-ingress` to the parent
+# chart's `platform.valkey.create`, step 6 retires `nats-ingress` the same way,
+# and step 8 retires `gateway-ingress` and this file with it. The cache's own
+# Application and manifests went with step 3, which is why nothing here names
+# infra/valkey/ any more.
+#
+# ITS OWN Application rather than a file beside the workloads it selects, because
+# the policies span workloads — one of which, NATS, is a Helm Application with no
+# directory of its own to put a manifest in. One Application keeps the policy for
+# a hop and the policy for its twin in one place.
 #
 # A LATER SYNC WAVE than the workloads it selects. A NetworkPolicy applied before
 # the pods it names exist is not an error — the selector simply matches nothing
