@@ -10,11 +10,21 @@
 #
 # Step 2 of `plans/dogfooding-the-parent-chart.md` in `yadgarhq/docs`.
 #
-# NO `syncPolicy.automated`, DELIBERATELY, AND THE PLAN'S STEP 5 IS WHAT ADDS IT.
-# Without it Argo computes a diff and applies nothing, so the multi-source form
-# below — OCI chart plus a values file out of this repository — is proved against
-# the live estate while the estate cannot be written to. A wrong `$values` path
-# fails here, visibly, with nothing touched.
+# `syncPolicy.automated` IS HERE NOW, AND STEP 5 OF THE PLAN IS WHAT ADDED IT.
+# Step 2 left it out deliberately: without it Argo computes a diff and applies
+# nothing, so the multi-source form below — OCI chart plus a values file out of
+# this repository — was proved against the live estate while the estate could
+# not be written to. A wrong `$values` path failed there, visibly, with nothing
+# touched. It did not fail.
+#
+# `prune: true` IS THE HALF THAT CARRIES THE RISK, AND THE ORDERING IS THE
+# CONTROL. An Application whose values file renders fewer objects than the
+# estate holds deletes the difference the first time it prunes. Step 4's manual
+# sync is what establishes this values file is not that one: a values file
+# missing `autoscaling.enabled` renders 38 objects and every one of the 38
+# matches, so a key-by-key check alone passes while 7 ScaledObjects and 6
+# NetworkPolicies are pruned. Set equality is what catches it. This block
+# therefore lands only after that sync has been read, never beside it.
 #
 # NO `Replace=true` AND NO `ServerSideApply=true`, per D83: either one would let
 # an immutable-field change become a delete-and-recreate of a live Service.
@@ -78,4 +88,5 @@ spec:
     server: https://kubernetes.default.svc
     namespace: yadgar
   syncPolicy:
+    automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true]
