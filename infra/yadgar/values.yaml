@@ -1,0 +1,143 @@
+# THIS ORGANISATION'S VALUES FOR THE PARENT CHART, READ BY infra/yadgar-app.yaml
+# AS `$self/infra/yadgar/values.yaml`.
+#
+# ADR-0786: any divergence between this organisation's estate and an adopter's
+# must be expressible as a difference between two values files, so it is a
+# visible render diff rather than invisible drift. This file IS that difference.
+# Nothing environment-specific belongs anywhere else.
+#
+# NOT READ BY THE `infra` APP-OF-APPS. It sources `path: infra` with no
+# `directory.recurse`, so a file one directory down is invisible to it — the same
+# reason `infra/databases/` holds manifests that only the `databases` Application
+# reads. A values file directly in `infra/` would be applied as a manifest.
+#
+# DERIVED FROM EACH MODULE CHART'S OWN DEFAULTS, never copied from the
+# `yadgar-modules` ApplicationSet's values block (ADR-0751, ADR-0619). Every key
+# below turns ON something the chart ships OFF, so an omission PRUNES a live
+# object rather than leaving it alone.
+#
+# MEASURED 2026-09-26 against the published `yadgar:0.2.36`
+# (digest sha256:2bb0f8b7ccbadc2015decacb8ccfed2a85db47dd9246a38297a2041b2ca8eec3):
+# this file renders 45 objects and ZERO MariaDB. With the three `database.create`
+# toggles forced true on a local render — which is merge B of
+# `plans/the-mariadb-crs-into-the-chart.md`, not this file — it renders 48 and
+# three MariaDB whose `spec` is byte-identical to all three live CRs.
+
+# ── GATEWAY ──────────────────────────────────────────────────────────────────
+# `tls.enabled` is gateway's OWN listener. `gateway.iam.tls.enabled` and its two
+# siblings are DIALS — whether gateway speaks TLS TO that module. Two different
+# questions on keys one character apart.
+#
+# NO `networkPolicy` KEY, DELIBERATELY. The `gateway-ingress` policy belongs to
+# the `network-policies` Application (`infra/network-policies/`), so asking the
+# chart for one too would give the object two owners.
+gateway:
+  autoscaling: { enabled: true }
+  sourceAddress: { trustedProxyHops: "" }
+  adminBootstrap: { tokenSecret: admin-bootstrap-token }
+  tls: { enabled: true } # gateway's own listener
+  gateway: { enabled: true } # the HTTPRoute
+  iam: { tls: { enabled: true } } # DIAL to iam
+  task: { tls: { enabled: true } } # DIAL to task
+  project: { tls: { enabled: true } } # DIAL to project
+
+# ── THE SIX SERVICES ─────────────────────────────────────────────────────────
+# `scrapeFrom.namespace: observability` is where Prometheus runs; each module's
+# `clients` list is the one service entitled to dial it.
+iam:
+  autoscaling: { enabled: true }
+  tls: { enabled: true }
+  iamDb: { tls: { enabled: true } }
+  networkPolicy:
+    {
+      enabled: true,
+      clients: [gateway],
+      scrapeFrom: { namespace: observability },
+    }
+
+iam-db:
+  autoscaling: { enabled: true }
+  tls: { enabled: true }
+  networkPolicy:
+    { enabled: true, clients: [iam], scrapeFrom: { namespace: observability } }
+  # THE ONE LINE THAT MAKES ADOPTION POSSIBLE RATHER THAN REFUSED, and it does
+  # nothing until merge B flips `database.create`. `spec.storage.storageClassName`
+  # carries `webhook:"inmutable"` on mariadb-operator 26.6.0, and the operator's
+  # `inmutable_webhook.go` compares old and new with `reflect.DeepEqual` — so
+  # REMOVING a set field is a change and is REFUSED.
+  #
+  # The chart's shipped default is EMPTY on purpose, because `standard` is kind's
+  # local-path class and on any other cluster it leaves the PVC `Pending`
+  # forever with nothing refusing. Empty renders NO `storageClassName` field, so
+  # the target cluster's own default class binds.
+  #
+  # This cluster's three live CRs carry `standard`. Measured 2026-09-26 on
+  # `yadgar:0.2.36`: WITHOUT these three lines the render omits the field on all
+  # three instances and the adoption apply asks the webhook to unset it. WITH
+  # them, 3 of 3 carry `storageClassName: standard` and the rendered spec differs
+  # from the live last-applied spec in 0 fields.
+  database:
+    instance:
+      storage:
+        className: standard
+
+task:
+  autoscaling: { enabled: true }
+  tls: { enabled: true }
+  taskDb: { tls: { enabled: true } }
+  networkPolicy:
+    {
+      enabled: true,
+      clients: [gateway],
+      scrapeFrom: { namespace: observability },
+    }
+
+task-db:
+  autoscaling: { enabled: true }
+  tls: { enabled: true }
+  networkPolicy:
+    { enabled: true, clients: [task], scrapeFrom: { namespace: observability } }
+  # See `iam-db.database.instance.storage.className` above for why this line
+  # exists and what refuses the apply without it.
+  database:
+    instance:
+      storage:
+        className: standard
+
+project:
+  autoscaling: { enabled: true }
+  tls: { enabled: true }
+  projectDb: { tls: { enabled: true } }
+  networkPolicy:
+    {
+      enabled: true,
+      clients: [gateway],
+      scrapeFrom: { namespace: observability },
+    }
+
+project-db:
+  autoscaling: { enabled: true }
+  tls: { enabled: true }
+  networkPolicy:
+    {
+      enabled: true,
+      clients: [project],
+      scrapeFrom: { namespace: observability },
+    }
+  # See `iam-db.database.instance.storage.className` above for why this line
+  # exists and what refuses the apply without it.
+  database:
+    instance:
+      storage:
+        className: standard
+
+# ── THE PLATFORM LAYER, OFF ──────────────────────────────────────────────────
+# This organisation already runs its own internal CA, its leaves, the Gateway
+# listener, Valkey and NATS out of `infra/`, so the parent must not render a
+# second copy. `false` is also the chart's own default; it is stated here because
+# a render this organisation measures must be reproducible from this file alone,
+# and because a later parent changing that default must not change this estate.
+# What happens to `infra/nats.yaml` and `infra/config-app.yaml` is named in
+# `plans/retiring-the-deploy-copies.md`, not decided here.
+platform:
+  enabled: false

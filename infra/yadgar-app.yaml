@@ -1,0 +1,81 @@
+# THE WHOLE OF YADGAR, AS THE ONE APPLICATION AN ADOPTER INSTALLS (ADR-0786).
+#
+# This organisation's Argo CD deploys the estate as ONE Application pointing at
+# the published parent chart with a values file, and THIS Application IS the
+# adopter's install. Nothing here is a copy of anything: the seven module
+# Applications that the `yadgar-modules` ApplicationSet generates from each
+# module repository's branch HEAD are retired by the cutover, so a module change
+# reaches this cluster by a published parent-chart VERSION and never by a merge
+# to a module's main.
+#
+# Step 2 of `plans/dogfooding-the-parent-chart.md` in `yadgarhq/docs`.
+#
+# NO `syncPolicy.automated`, DELIBERATELY, AND THE PLAN'S STEP 5 IS WHAT ADDS IT.
+# Without it Argo computes a diff and applies nothing, so the multi-source form
+# below — OCI chart plus a values file out of this repository — is proved against
+# the live estate while the estate cannot be written to. A wrong `$values` path
+# fails here, visibly, with nothing touched.
+#
+# NO `Replace=true` AND NO `ServerSideApply=true`, per D83: either one would let
+# an immutable-field change become a delete-and-recreate of a live Service.
+#
+# NO `ignoreDifferences` BLOCK YET. `infra/databases-app.yaml` carries one, on
+# the two `generate` pointers the mariadb-operator writes back onto the spec it
+# reconciles. It belongs here only once this Application renders the three
+# MariaDB CRs, which is merge B of `plans/the-mariadb-crs-into-the-chart.md`.
+# Its absence today is correct rather than forgotten: this render contains no
+# MariaDB, because the three `database.create` toggles stay false in
+# `infra/yadgar/values.yaml`.
+#
+# NO `argocd.argoproj.io/sync-wave`, WHICH IS WHAT THE PLAN SPECIFIES AND IS A
+# DIFFERENCE FROM WHAT THIS REPLACES. The `yadgar-modules` ApplicationSet
+# annotates its generated Applications `sync-wave: "10"` so services deploy after
+# the infra, operators and databases waves. This Application defaults to wave 0.
+# The consequence is ordering, not breakage — a module pod started before its
+# database or certificate exists sits in `ContainerCreating` until the Secret
+# arrives, which is the estate's documented "slower rather than broken" shape.
+# Raised against the plan rather than corrected here by hand.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: yadgar
+  namespace: argocd
+spec:
+  project: default
+  # TWO SOURCES, AND THE SECOND ONE RENDERS NOTHING. `ref: self` with no `path`
+  # makes this repository available to the first source as `$self`, which is how
+  # an Argo Application feeds a values file out of git to a chart pulled from an
+  # OCI registry. This estate has never run the multi-source form before, so
+  # proving it is half of what step 2 is for.
+  sources:
+    - repoURL: ghcr.io/yadgarhq/charts
+      chart: yadgar
+      # PINNED BY HAND, ONE LINE PER PULL REQUEST, AND NOTHING WRITES IT.
+      # Re-verified 2026-09-26 by the plan's step 0: `0.2.36` pins gateway
+      # 0.9.52, iam 0.8.44, iam-db 0.7.46, project 0.1.19, project-db 0.3.10,
+      # task 0.5.30, task-db 0.6.34, platform 0.1.12 and config 0.2.0; those
+      # seven image digests equal `yadgarhq/argocd`'s `versions/*.yaml` and equal
+      # every module pod's `imageID` on this cluster; `config` is 0 commits ahead
+      # of its pin; and the `push_validation` job for the tag's commit is
+      # `success`. That last read is the only gate this pin has, because
+      # `ci-release.yaml`'s `release` job carries no `needs:` on it.
+      #
+      # `0.2.36` SPECIFICALLY, and an earlier parent is not interchangeable. It
+      # is the first parent carrying all three hardened `-db` charts — 0.2.34
+      # carries one and 0.2.35 two — where hardened means the MariaDB CR renders
+      # `helm.sh/resource-policy: keep`, `argocd.argoproj.io/sync-options:
+      # Prune=false` and an OMITTABLE `storage.className`. The values file's
+      # three `className: standard` lines are meaningless against a parent
+      # without them.
+      targetRevision: 0.2.36
+      helm:
+        valueFiles:
+          - $self/infra/yadgar/values.yaml
+    - repoURL: https://github.com/yadgarhq/deploy
+      targetRevision: main
+      ref: self
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+  syncPolicy:
+    syncOptions: [CreateNamespace=true]
