@@ -137,7 +137,11 @@ project-db:
 # second copy. `false` is also the chart's own default; it is stated here because
 # a render this organisation measures must be reproducible from this file alone,
 # and because a later parent changing that default must not change this estate.
-# What happens to `infra/nats.yaml` and `infra/config-app.yaml` is named in
-# `plans/retiring-the-deploy-copies.md`, not decided here.
+# What happens to `infra/nats.yaml` is named in
+# `plans/retiring-the-deploy-copies.md`, not decided here. `infra/config-app.yaml`
+# is GONE as of this step, and that plan defers to this one for it: `config` is an
+# UNCONDITIONAL dependency of the parent, so the parent renders `ConfigMap/audit`
+# and `ConfigMap/shared` whatever this toggle says, and the two names collide from
+# the cutover's first sync.
 platform:
   enabled: false
