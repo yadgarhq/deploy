@@ -104,6 +104,21 @@ kind: NetworkPolicy
 metadata:
   name: nats-ingress
   namespace: yadgar
+  # NEVER PRUNED BY THIS APPLICATION, so the handover to the parent is an
+  # adoption and not a delete-and-recreate. Step 6's first merge of
+  # `plans/retiring-the-deploy-copies.md` deletes this file and sets
+  # `platform.nats.create`, which renders a `nats-ingress` of the same spec.
+  # Two automated Applications then act on one name on their own jitter. At
+  # step 3 (deploy#58) the prune won that race for `valkey-ingress`:
+  # `network-policies` deleted it and `yadgar` created it again, with a new
+  # uid and `creationTimestamp` 2026-09-26T17:26:23Z. Between the two, no
+  # policy selected the cache. With this option, `network-policies` skips the
+  # prune, and `yadgar` rewrites the tracking-id on the same object.
+  #
+  # IT MUST BE LIVE BEFORE THAT MERGE. The option protects only an object that
+  # already carries it, so this file syncs first and the deletion follows.
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   podSelector:
     matchLabels: { app.kubernetes.io/name: nats }
