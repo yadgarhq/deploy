@@ -32,6 +32,19 @@ kind: EnvoyProxy
 metadata:
   name: edge
   namespace: yadgar
+  # NEVER PRUNED BY THIS APPLICATION, so step 7 of
+  # `plans/retiring-the-deploy-copies.md` hands this object to the `yadgar`
+  # Application as an adoption rather than a delete-and-recreate. Step 7
+  # deletes this file and sets `platform.gatewayListener.create`, which renders this
+  # object under the same name. Two automated Applications then act on one
+  # name on their own jitter, and at step 3 (deploy#58) the prune won that
+  # race for `valkey-ingress`. With this option, `tls` skips the prune and
+  # `yadgar` rewrites the tracking-id on the same object.
+  #
+  # IT MUST BE LIVE BEFORE THAT MERGE. The option protects only an object that
+  # already carries it, so this file syncs first and the deletion follows.
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   provider:
     type: Kubernetes
