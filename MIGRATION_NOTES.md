@@ -2607,3 +2607,39 @@ parent renders the same five names, and the two-owners gate reddens on 5.
 Secrets** (`valkey-password`, `nats-auth`, `nats-auth-gateway`,
 `admin-bootstrap-token`), because nothing renders a minting Job until the second
 merge lands. Keep the window short, and do not recreate the cluster inside it.
+
+## A5c — prove step 9's second merge (NEEDS-MAX, ADR-0810)
+
+**Merge only after A5b's proof passed:** `Application/bootstrap` is NotFound,
+and none of the five names exists in `yadgar`. That merge sets
+`platform.bootstrap.create: true` and keeps `platform.bootstrap.iamKeys.create:
+false`. Its K3 render diff at parent `0.3.7` is five added hook objects and 0
+changed objects, so no pod rolls. Every check below is read-only.
+
+```bash
+# 1. The sync finished. Expect: Succeeded Synced/Healthy
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{.status.operationState.phase} {.status.sync.status}/{.status.health.status}{"\n"}'
+
+# 2. Argo ran the hooks as PreSync. Expect five PreSync lines: Job/bootstrap-secrets
+#    and Job/admin-bootstrap-token Succeeded, and the ServiceAccount, Role and
+#    RoleBinding bootstrap-secrets.
+kubectl --context kind-yadgar -n argocd get application yadgar -o json \
+  | jq -r '.status.operationState.syncResult.resources[] | select(.hookType != null) | "\(.hookType) \(.kind)/\(.name) \(.hookPhase // .status)"'
+
+# 3. The Jobs only answered 409. Expect four lines, each "already exists, left
+#    untouched": valkey-password, nats-auth, nats-auth-gateway from the first,
+#    admin-bootstrap-token from the second. Any "created" or "refused" is a failure.
+kubectl --context kind-yadgar -n yadgar logs job/bootstrap-secrets
+kubectl --context kind-yadgar -n yadgar logs job/admin-bootstrap-token
+
+# 4. The five Secrets are untouched: run A5b's baseline loop.
+#    Expect every row equal to A5b's table: uid, resourceVersion and hash.
+
+# 5. iam still holds its keys. Expect at least one line.
+kubectl --context kind-yadgar -n yadgar logs deploy/iam | grep 'crypto keys loaded'
+```
+
+**Rollback:** revert this merge. The hooks stop rendering and the Secrets stay,
+because nothing tracks them. Delete the two completed hook Jobs and their RBAC
+by hand if they must go; Argo does not prune hooks.

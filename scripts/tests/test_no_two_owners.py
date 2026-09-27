@@ -1213,23 +1213,180 @@ def bootstrap_owners(
     )
 
 
-def test_the_bootstrap_names_have_no_owner_between_the_two_merges(
-    working_tree: Path,
-) -> None:
-    """Step 9's first merge: the five names are in neither D nor P, ON PURPOSE.
+# ── STEP 9, SECOND MERGE: THE PARENT MINTS THE BOOTSTRAP SECRETS ─────────────
+# ADR-0810: this organisation sets `platform.bootstrap.create` true and
+# `platform.bootstrap.iamKeys.create` false, EXPLICITLY. The five names come
+# back as the parent's hooks, never as tracked objects, so they are asserted
+# here and not in `RETIRED_TUPLES` (see the comment there).
+EXPECTED_BOOTSTRAP_HOOKS = 5
+HOOK_PHASES = "pre-install,pre-upgrade"
+HOOK_DELETE_POLICY = "before-hook-creation"
 
-    ADR-0810 hands `bootstrap` over in two merges with a hand step between.
-    This merge removes `deploy`'s Application, so its five live objects are
-    orphaned; A5b deletes them by hand; the second merge turns
-    `platform.bootstrap.create` on and the parent's hooks recreate them. Between
-    the two merges ZERO owners is the ruled state, not a gap C1's zero-owners
-    half should catch. The second merge replaces this test with one asserting
-    the parent renders all five as hooks.
-    """
-    in_deploy, in_parent = bootstrap_owners(working_tree)
-    print(f"[step 9] {len(in_deploy)} of 5 bootstrap name(s) in D, {len(in_parent)} in P")
+# WHAT EACH HOOK JOB MINTS, read off the `create <name> <<JSON` lines of its
+# script. Measured 2026-09-27 at the pinned 0.3.7. `iam-keys` is absent on
+# purpose: live iam 0.8.45 logs its key identity UNVERIFIED (ledger 1155), so
+# the wrong-key refusal the parent's default `iamKeys.create: true` relies on
+# is not armed here. `iam-keys` stays with `make secrets` and 1Password.
+EXPECTED_MINTED = {
+    "bootstrap-secrets": ("valkey-password", "nats-auth", "nats-auth-gateway"),
+    "admin-bootstrap-token": ("admin-bootstrap-token",),
+}
+NEVER_MINTED = "iam-keys"
+IAM_KEYS_KEY = "platform.bootstrap.iamKeys.create"
+MINT_LINE = re.compile(r"^\s*create (\S+) <<JSON", re.MULTILINE)
+
+# STEP 9's FLIP, REVERTED with `--set`, for K3. The flip is the ONLY value
+# this merge moves (`adminToken.secretName` restates the parent default).
+STEP_9_REVERTED: tuple[str, ...] = ("--set", "platform.bootstrap.create=false")
+
+
+def hooks_of(documents: list) -> dict[tuple[str, str, str], dict]:
+    """Every hook-annotated document, by `(apiGroup, kind, name)`, with its annotations."""
+    found = {}
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        annotations = (document.get("metadata") or {}).get("annotations") or {}
+        if HOOK_ANNOTATION in annotations:
+            for candidate in tuples_of([document]):
+                found[candidate] = annotations
+    return found
+
+
+def minted(documents: list) -> dict[str, list[str]]:
+    """The Secret names each Job's script creates, by Job name."""
+    result: dict[str, list[str]] = {}
+    for document in documents:
+        if not isinstance(document, dict) or document.get("kind") != "Job":
+            continue
+        for container in document["spec"]["template"]["spec"]["containers"]:
+            script = "\n".join(container.get("command") or []) + "\n" + "\n".join(
+                container.get("args") or []
+            )
+            result.setdefault(document["metadata"]["name"], []).extend(MINT_LINE.findall(script))
+    return result
+
+
+def iam_keys_violations(tree: Path, overrides: tuple[str, ...] = ()) -> list[str]:
+    """Why this tree would mint `iam-keys`, or nothing. Each reason names the key."""
+    values = yaml.safe_load((tree / "infra" / "yadgar" / "values.yaml").read_text())
+    stated = ((values.get("platform") or {}).get("bootstrap") or {}).get("iamKeys") or {}
+    problems = []
+    if "create" not in stated:
+        problems.append(
+            f"{IAM_KEYS_KEY} is not stated in infra/yadgar/values.yaml; the parent default is true"
+        )
+    elif stated["create"] is not False:
+        problems.append(f"{IAM_KEYS_KEY} is {stated['create']!r}; ADR-0810 requires false")
+    for job, names in minted(parent_render(tree, overrides)).items():
+        if NEVER_MINTED in names:
+            problems.append(f"Job/{job} mints {NEVER_MINTED} ({IAM_KEYS_KEY})")
+    return problems
+
+
+def test_the_parent_renders_every_bootstrap_name_as_a_hook(working_tree: Path) -> None:
+    """The five names have ONE owner again: the parent, as PreSync hooks."""
+    hooks = hooks_of(parent_render(working_tree))
+    found = {t: hooks[t] for t in BOOTSTRAP_HOOK_NAMES if t in hooks}
+    print(f"[step 9] {len(found)} of {EXPECTED_BOOTSTRAP_HOOKS} bootstrap name(s) are parent hooks")
+    assert len(BOOTSTRAP_HOOK_NAMES) == EXPECTED_BOOTSTRAP_HOOKS
+    assert set(found) == BOOTSTRAP_HOOK_NAMES, sorted(BOOTSTRAP_HOOK_NAMES - set(found))
+    wrong = {
+        t: a
+        for t, a in found.items()
+        if a.get(HOOK_ANNOTATION) != HOOK_PHASES
+        or a.get("helm.sh/hook-delete-policy") != HOOK_DELETE_POLICY
+    }
+    assert not wrong, wrong
+    in_deploy, _ = bootstrap_owners(working_tree)
     assert not in_deploy, sorted(in_deploy)
-    assert not in_parent, sorted(in_parent)
+
+
+def test_the_flip_dropped_leaves_the_bootstrap_names_unowned(working_tree: Path) -> None:
+    """Red case: step 9's deletion kept, its flip dropped. All five are unowned."""
+    hooks = hooks_of(parent_render(working_tree, STEP_9_REVERTED))
+    assert not (BOOTSTRAP_HOOK_NAMES & set(hooks)), sorted(BOOTSTRAP_HOOK_NAMES & set(hooks))
+
+
+def test_step_9_adds_the_five_hooks_and_changes_nothing_else(working_tree: Path) -> None:
+    """K3: the flip adds exactly the five hook objects and changes 0 others."""
+    before = parent_render(working_tree, STEP_9_REVERTED)
+    after = parent_render(working_tree)
+    changes = field_changes(before, after)
+    added = {(kind, name) for _, kind, name in BOOTSTRAP_HOOK_NAMES}
+    print(f"[K3 step 9] {len(before)} -> {len(after)} object(s), {len(changes)} change(s)")
+    assert changes == {(*o, "<object added or removed>") for o in added}, sorted(changes)
+
+
+def test_the_hooks_mint_every_bootstrap_secret_but_iam_keys(working_tree: Path) -> None:
+    """Each Job mints exactly its names; `iam-keys` is minted by none."""
+    found = minted(parent_render(working_tree))
+    print(f"[step 9] minted: {found}")
+    assert {job: tuple(names) for job, names in found.items()} == EXPECTED_MINTED, found
+    assert not iam_keys_violations(working_tree), iam_keys_violations(working_tree)
+
+
+def test_iam_keys_create_true_mints_iam_keys(working_tree: Path) -> None:
+    """Red case: `iamKeys.create=true` adds `iam-keys` to `bootstrap-secrets`' mint."""
+    found = minted(parent_render(working_tree, ("--set", f"{IAM_KEYS_KEY}=true")))
+    assert found["bootstrap-secrets"] == [*EXPECTED_MINTED["bootstrap-secrets"], NEVER_MINTED], found
+
+
+def test_deleting_the_iam_keys_block_reddens_and_names_the_key(tmp_path: Path) -> None:
+    """Red case: the explicit false removed, so the parent default (true) applies.
+
+    The WHOLE `iamKeys` block is removed. Removing only its `create` line leaves
+    `iamKeys:` null, and a null in values deletes the parent default rather
+    than restating it, which is a different case.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    path = tree / "infra" / "yadgar" / "values.yaml"
+    values = yaml.safe_load(path.read_text())
+    del values["platform"]["bootstrap"]["iamKeys"]
+    path.write_text(yaml.safe_dump(values))
+    problems = iam_keys_violations(tree)
+    assert len(problems) == 2 and all(IAM_KEYS_KEY in p for p in problems), problems
+    assert any("Job/bootstrap-secrets mints iam-keys" in p for p in problems), problems
+
+
+def admin_token_names(tree: Path, overrides: tuple[str, ...] = ()) -> dict[str, set[str]]:
+    """Every place the admin bootstrap token's Secret is named, by where."""
+    values = yaml.safe_load((tree / "infra" / "yadgar" / "values.yaml").read_text())
+    documents = parent_render(tree, overrides)
+    gateway = next(
+        d for d in documents
+        if isinstance(d, dict) and (d.get("kind"), d["metadata"]["name"]) == ("Deployment", "gateway")
+    )
+    mounted = {
+        (volume.get("secret") or {}).get("secretName")
+        for volume in gateway["spec"]["template"]["spec"].get("volumes") or []
+        if volume.get("name") == "admin-bootstrap-token"
+    }
+    return {
+        "values gateway.adminBootstrap.tokenSecret": {values["gateway"]["adminBootstrap"]["tokenSecret"]},
+        "Job/admin-bootstrap-token mints": set(minted(documents)["admin-bootstrap-token"]),
+        "Deployment/gateway mounts": mounted,
+    }
+
+
+def test_the_minted_admin_token_is_the_one_gateway_reads(working_tree: Path) -> None:
+    """The hook mints the Secret named by `gateway.adminBootstrap.tokenSecret`."""
+    names = admin_token_names(working_tree)
+    print(f"[step 9] admin token: {names}")
+    assert all(n == {"admin-bootstrap-token"} for n in names.values()), names
+
+
+def test_a_renamed_admin_token_reddens(working_tree: Path) -> None:
+    """Red case: the Job's name moved alone. The parent itself refuses to render.
+
+    Measured at the pinned 0.3.7: `yadgar/templates/validate.yaml` refuses two
+    different names while `platform.bootstrap.create` is true, and names both
+    keys. So a mismatch cannot reach the cluster through this values file.
+    """
+    with pytest.raises(AssertionError, match=r"gateway\.adminBootstrap\.tokenSecret"):
+        admin_token_names(
+            working_tree, ("--set", "platform.bootstrap.adminToken.secretName=renamed")
+        )
 
 
 def test_restoring_the_bootstrap_application_reddens_the_rung(tmp_path: Path) -> None:
@@ -1243,6 +1400,20 @@ def test_restoring_the_bootstrap_application_reddens_the_rung(tmp_path: Path) ->
     _, examined = two_owners(tree)
     assert in_deploy == BOOTSTRAP_HOOK_NAMES, sorted(in_deploy ^ BOOTSTRAP_HOOK_NAMES)
     assert examined == EXPECTED_DEPLOY_TUPLES + len(BOOTSTRAP_HOOK_NAMES), examined
+
+
+def test_restoring_the_bootstrap_application_reddens_the_gate(tmp_path: Path) -> None:
+    """C1's red case for step 9: with the flip in, a restored copy is two owners.
+
+    All five names, each named with both owners. This is the state a revert of
+    the first merge alone would create, and why that revert is valid only
+    before this merge.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    restore_bootstrap(tree)
+    failures, examined = two_owners(tree)
+    assert {failure.tuple for failure in failures} == BOOTSTRAP_HOOK_NAMES, render(failures, examined)
+    assert all("bootstrap" in failure.deploy_owner for failure in failures), render(failures, examined)
 
 
 def test_a_hook_rendered_copy_is_named_by_the_guard(tmp_path: Path) -> None:
