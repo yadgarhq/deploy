@@ -123,6 +123,12 @@ TARGET_NAMESPACE = "yadgar"
 # Application tracks the same five. Measured 2026-09-27 at the pinned 0.2.38:
 # 20 before and 15 after. D now holds no chart source at all, so this gate no
 # longer reaches `nats-io.github.io`.
+#
+# STILL 15 AFTER B5 of `plans/the-one-application-install.md`, which bumps the
+# parent to 0.2.42 and deletes the two `nats.url` lines. B5 changes P and
+# touches no Application, so D does not move. Measured 2026-09-27: 15 at the
+# pinned 0.2.38 before and 15 at the pinned 0.2.42 after, with 0 two-owner
+# failures on both sides.
 EXPECTED_DEPLOY_TUPLES = 15
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
@@ -589,32 +595,36 @@ RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
     ),
     # STEP 6, FIRST MERGE. The `network-policies` Application SURVIVES this
     # merge, so the key names the file that left it rather than a retired
-    # Application. Only this one tuple is listed: `infra/nats.yaml`'s five
-    # objects leave at the third merge, and the parent at 0.2.38 renders them
-    # as `yadgar-nats*`, so they are successors under other names rather than
-    # the same tuples, and no entry here could say they are in P.
+    # Application. Only this one tuple is listed here: `infra/nats.yaml`'s
+    # five objects left at the third merge, when the parent at 0.2.38 rendered
+    # them as `yadgar-nats*`. They have their own entry below, from B5.
     "network-policies/nats-ingress.yaml": frozenset(
         {("networking.k8s.io", "NetworkPolicy", "nats-ingress")}
     ),
-    # STEP 6, THIRD MERGE, AND WHY IT ADDS NO ENTRY. `infra/nats.yaml`'s five
-    # tuples — `StatefulSet`, `Service`, `PodDisruptionBudget` `nats`,
-    # `Service/nats-headless`, `ConfigMap/nats-config` — are NOT in P: the
-    # parent at 0.2.38 renders the broker as `yadgar-nats*`. An entry here
-    # would redden on every one of them, correctly, because nothing takes those
-    # NAMES over; the live objects are orphaned, not handed over, and B4b of
-    # `plans/the-one-application-install.md` deletes them by hand.
-    #
-    # WHAT THIS DICT GUARDS FOR OTHER STEPS, THE BROKER-URL GATE BELOW GUARDS
-    # HERE: the question that matters is not "does P render `nats`" but "does
-    # any client still dial it". Every `nats://` host in P must be a Service P
-    # renders, so a url left on `nats` reddens this merge rather than leaving
-    # a client with no broker.
+    # STEP 6's THIRD MERGE DELETED `infra/nats.yaml`, AND B5 IS WHAT ADDS ITS
+    # ENTRY. At the pinned 0.2.38 these five NAMES were not in P — the parent
+    # rendered the broker as `yadgar-nats*` — so the third merge orphaned the
+    # live objects rather than handing them over, and B4b of
+    # `plans/the-one-application-install.md` deleted them by hand. From parent
+    # 0.2.42, `platform` 0.1.17 carries `fullnameOverride: nats` (platform#16,
+    # first released in 0.1.15, ADR-0805), so P renders exactly these five
+    # names again: a delete-then-adopt, not a rename. Measured 2026-09-27: all
+    # five in P at 0.2.42, none at 0.2.38.
+    "nats.yaml": frozenset(
+        {
+            ("apps", "StatefulSet", "nats"),
+            ("", "Service", "nats"),
+            ("", "Service", "nats-headless"),
+            ("", "ConfigMap", "nats-config"),
+            ("policy", "PodDisruptionBudget", "nats"),
+        }
+    ),
 }
 
 # THE COUNT THE ZERO-OWNERS TEST ASSERTS, written down so that an entry dropped
 # from the dict above reddens rather than shrinks what is examined. 13 from
-# step 5 and 1 from step 6's first merge.
-EXPECTED_RETIRED_TUPLES = 14
+# step 5, 1 from step 6's first merge and 5 from B5.
+EXPECTED_RETIRED_TUPLES = 19
 
 
 def orphans(tree: Path, overrides: tuple[str, ...] = ()) -> list[tuple[str, tuple[str, str, str]]]:
@@ -689,19 +699,44 @@ def test_restoring_the_nats_policy_reddens_the_gate(tmp_path: Path) -> None:
 
 
 def test_the_nats_deletion_without_the_toggle_reddens(tmp_path: Path) -> None:
-    """Red case: this merge's deletion kept, its flip dropped.
+    """Red case: step 6's deletions kept, the toggle dropped.
 
-    Exactly `nats-ingress` goes unowned, and nothing from step 5, so the case
-    isolates this merge. With no owner the broker's pods would have NO ingress
-    policy at all — every source admitted on 4222, 8222 and 6222.
+    Exactly `nats-ingress` and, from B5, the five `nats*` broker objects go
+    unowned, and nothing from step 5, so the case isolates the broker. With
+    no owner the broker's pods would have NO ingress policy at all — every
+    source admitted on 4222, 8222 and 6222 — and no healer.
     """
     missing = orphans(
         a_copy_of_the_tree(tmp_path),
         overrides=("--set", "platform.nats.create=false"),
     )
-    assert {candidate for _, candidate in missing} == RETIRED_TUPLES[
-        "network-policies/nats-ingress.yaml"
-    ], missing
+    assert {candidate for _, candidate in missing} == (
+        RETIRED_TUPLES["network-policies/nats-ingress.yaml"] | RETIRED_TUPLES["nats.yaml"]
+    ), missing
+
+
+# ── B5: K3's EXPECTATION, ENCODED ────────────────────────────────────────────
+# K3 of `plans/the-one-application-install.md` is the render diff of this
+# organisation's values between the old and new pins. Measured 2026-09-27
+# (0.2.38 with `main`'s values against 0.2.42 with B5's): 70 objects on both
+# sides, the five `yadgar-nats*` objects removed, the five `nats*` objects
+# added with every other field equal, `NATS_URL` in `Deployment/iam` and
+# `Deployment/gateway` moved from `nats://yadgar-nats:4222` to
+# `nats://nats:4222`, and the other 63 objects byte-identical. The old pin's
+# render needs the old values file, which a depth-1 CI checkout does not
+# hold, so what is encoded here is the AFTER half: the zero-owners entry
+# above says the five `nats*` names are in P, and this test says no
+# `yadgar-nats*` name survives beside them. A parent pinned back below the
+# `fullnameOverride` renders the old names and reddens here.
+RETIRED_BROKER_PREFIX = "yadgar-nats"
+
+
+def test_no_broker_object_keeps_the_release_prefixed_name(working_tree: Path) -> None:
+    """After B5, P renders the broker as `nats*` and nothing as `yadgar-nats*`."""
+    parent = parent_side(working_tree)
+    stale = sorted(t for t in parent if t[2].startswith(RETIRED_BROKER_PREFIX))
+    print(f"[K3] {len(parent)} tuple(s) in P, {len(stale)} named {RETIRED_BROKER_PREFIX}*")
+    assert not stale, f"the parent still renders the release-prefixed broker: {stale}"
 
 
 # ── EVERY BROKER URL NAMES A BROKER, FROM STEP 6's SECOND MERGE ──────────────
@@ -721,6 +756,13 @@ def test_the_nats_deletion_without_the_toggle_reddens(tmp_path: Path) -> None:
 #     step 6's second merge (both urls dialled `deploy`'s `nats`), true from it
 #     on. It stays true after step 6a / B5, whose `fullnameOverride: nats` makes
 #     P render `Service/nats` while the urls fall back to the module default.
+#
+# B5 IS THE OTHER HALF OF THE COUPLING. From parent 0.2.42 P renders no
+# `Service/yadgar-nats`, so a url line kept on `nats://yadgar-nats:4222`
+# beside the bump reddens both checks; and the url lines deleted WITHOUT the
+# bump leave both clients on `nats`, which 0.2.38 does not render. The red
+# cases below therefore dial `yadgar-nats`, the name no pin from 0.2.42 on
+# renders, where before B5 they dialled `nats`.
 #
 # THE FLOOR IS 2: `iam` publishes and `gateway` consumes. A render with fewer
 # urls has dropped a client, and "no url failed" over zero urls is no finding.
@@ -808,23 +850,46 @@ def test_every_client_dials_the_parents_broker(working_tree: Path) -> None:
 
 
 def test_a_url_left_on_the_deleted_broker_reddens(tmp_path: Path) -> None:
-    """Red case for RESOLVES: step 6's third merge with one url forgotten.
+    """B5's red case: the bump taken and ONE url line kept on `yadgar-nats`.
 
     ONE url, so the gate is shown to judge each url rather than the render.
+    Both checks redden, because from 0.2.42 no side renders `yadgar-nats`.
     """
     tree = a_copy_of_the_tree(tmp_path)
-    # `missing_ok`, so the case still runs after the third merge deletes it.
-    (tree / "infra" / "nats.yaml").unlink(missing_ok=True)
-    failures, examined = unresolved_brokers(
-        tree, overrides=("--set-string", "iam.nats.url=nats://nats:4222")
-    )
-    assert failures == [("Deployment/iam", "nats")], (failures, examined)
+    overrides = ("--set-string", "iam.nats.url=nats://yadgar-nats:4222")
+    failures, examined = unresolved_brokers(tree, overrides)
+    assert failures == [("Deployment/iam", "yadgar-nats")], (failures, examined)
+    on_parent, _ = unresolved_brokers(tree, overrides, parent_only=True)
+    assert on_parent == [("Deployment/iam", "yadgar-nats")], on_parent
 
 
-# D's `Service/nats`, CONSTRUCTED rather than read off `infra/nats.yaml`, so
-# the pair below means the same thing before and after the third merge deletes
-# that file. A directory source, because that is the cheapest shape D reads, and
-# only what the gate reads, for the reason the valkey constants above give.
+# THE PIN B5 MOVES AWAY FROM, and the last one whose `platform` renders the
+# broker as `yadgar-nats*`. Written here rather than read out of git, for the
+# depth-1 reason the valkey constants above give.
+PIN_BEFORE_B5 = "0.2.38"
+
+
+def test_the_url_deletion_without_the_bump_reddens(tmp_path: Path) -> None:
+    """The coupling's other half: B5's url deletion kept, its bump dropped.
+
+    Both clients fall back to `nats://nats:4222` while the parent at 0.2.38
+    renders only `Service/yadgar-nats`, so BOTH urls fail, by name.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    application = tree / "infra" / "yadgar-app.yaml"
+    text = application.read_text()
+    pinned = re.findall(r"^\s*targetRevision: (\d+\.\d+\.\d+)\s*$", text, re.MULTILINE)
+    assert len(pinned) == 1, pinned
+    application.write_text(text.replace(f"targetRevision: {pinned[0]}", f"targetRevision: {PIN_BEFORE_B5}"))
+    failures, _ = unresolved_brokers(tree, parent_only=True)
+    assert sorted(failures) == [("Deployment/gateway", "nats"), ("Deployment/iam", "nats")], failures
+
+
+# D's `Service/yadgar-nats`, CONSTRUCTED rather than read off any file, so the
+# pair below means the same thing at every pin. From B5 it is the one broker
+# name P does NOT render, which is what lets D alone resolve it. A directory
+# source, because that is the cheapest shape D reads, and only what the gate
+# reads, for the reason the valkey constants above give.
 DEPLOY_BROKER_APPLICATION = """
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -846,23 +911,23 @@ DEPLOY_BROKER_SERVICE = """
 apiVersion: v1
 kind: Service
 metadata:
-  name: nats
+  name: yadgar-nats
 """
 
 
 def test_a_url_on_deploys_broker_resolves_but_is_not_the_parents(tmp_path: Path) -> None:
-    """The discriminating pair: the same kind of url with D holding `Service/nats`.
+    """The discriminating pair: the same kind of url with D holding the Service.
 
-    RESOLVES stays green, because D renders `Service/nats`. ON THE PARENT'S
-    BROKER reddens on exactly that url. A RESOLVES check that ignored D would
-    redden here too, and one that ignored P would pass the case above.
+    RESOLVES stays green, because D renders `Service/yadgar-nats`. ON THE
+    PARENT'S BROKER reddens on exactly that url. A RESOLVES check that ignored
+    D would redden here too, and one that ignored P would pass the case above.
     """
     tree = a_copy_of_the_tree(tmp_path)
     (tree / "infra" / "deploy-broker").mkdir()
     (tree / "infra" / "deploy-broker" / "service.yaml").write_text(DEPLOY_BROKER_SERVICE)
     (tree / "infra" / "deploy-broker-app.yaml").write_text(DEPLOY_BROKER_APPLICATION)
-    overrides = ("--set-string", "gateway.nats.url=nats://nats:4222")
+    overrides = ("--set-string", "gateway.nats.url=nats://yadgar-nats:4222")
     resolves, _ = unresolved_brokers(tree, overrides)
     assert resolves == [], resolves
     on_parent, _ = unresolved_brokers(tree, overrides, parent_only=True)
-    assert on_parent == [("Deployment/gateway", "nats")], on_parent
+    assert on_parent == [("Deployment/gateway", "yadgar-nats")], on_parent

@@ -64,37 +64,46 @@ spec:
     - repoURL: ghcr.io/yadgarhq/charts
       chart: yadgar
       # PINNED BY HAND, ONE LINE PER PULL REQUEST, AND NOTHING WRITES IT.
-      # Measured 2026-09-26 on the pulled artifact
-      # (digest sha256:38847bbbdda01657f3a2d259c423e4c1c9e36a3310c8d7698c0b380ac18d3b32):
-      # `0.2.38` pins gateway 0.9.52, iam 0.8.44, iam-db 0.7.46, project 0.1.19,
+      # Measured 2026-09-27 on the pulled artifact
+      # (digest sha256:5b092b8db408c096f715b0e4d3caad2eed1df6dcef577e588d3e006069a54567):
+      # `0.2.42` pins gateway 0.9.52, iam 0.8.44, iam-db 0.7.46, project 0.1.19,
       # project-db 0.3.10, task 0.5.30, task-db 0.6.34, config 0.2.0 and
-      # platform 0.1.13. Only the LAST of those moved from `0.2.36`; the other
-      # eight are byte-for-byte the subcharts this estate already runs, so the
-      # step-0 reading that those seven image digests equal `yadgarhq/argocd`'s
-      # `versions/*.yaml` and equal every module pod's `imageID` carries over
-      # unchanged. `config` is 0 commits ahead of its pin, re-read the same day.
-      # `push_validation` for the tag's commit `841e177` is `success` — that read
-      # is the only gate this pin has, because `ci-release.yaml`'s `release` job
-      # carries no `needs:` on it.
+      # platform 0.1.17. Only the LAST of those moved from `0.2.38`: each of the
+      # other eight vendored subchart directories is byte-identical between the
+      # two pulled artifacts, so no module image digest moves, no module pod
+      # rolls for a new image and no `-db` migration runs. `push_validation` for
+      # the tag's commit `71db3d4` is `success` — that read is the only gate this
+      # pin has, because `ci-release.yaml`'s `release` job carries no `needs:`
+      # on it.
       #
-      # WHY THIS BUMP MOVES NOTHING THIS CLUSTER RENDERS, AND WHY THAT WAS
-      # PROVED RATHER THAN ARGUED. `prune: true` and `selfHeal: true` are live
-      # below, so a parent rendering FEWER objects deletes the difference
-      # unattended. The gate is therefore a render diff BEFORE the merge, not an
-      # inspection after. `infra/yadgar/values.yaml` was templated against both
-      # pulled artifacts on helm 3.20.2 AND 4.3.0, `--namespace yadgar`,
-      # `--kube-version v1.36.1`, and the six `--api-versions` this chart's
-      # `require-api` helpers and capability guards name: 48 objects on all four
-      # renders, the `apiGroup|Kind|name` sets identical, and the manifests
-      # BYTE-IDENTICAL. Nothing added, nothing pruned.
+      # WHAT `platform` 0.1.14 TO 0.1.17 CARRY: `fullnameOverride: nats` on the
+      # NATS subchart (platform#16, first released in 0.1.15, ADR-0805);
+      # `Prune=false` on the vendored CRDs (#17); the edge issuer defaulting to
+      # the internal CA (#18); a render-time usages test (#19). Only the first
+      # changes this render: the CRDs sit behind `operators.create` and the edge
+      # Certificate behind `edgeTLS.create`, both false in
+      # `infra/yadgar/values.yaml`.
       #
-      # WHAT `platform` 0.1.13 ACTUALLY CARRIES is the fix for the probe Jobs
-      # that fail against a healthy cluster — both templates now set a
-      # `USER_AGENT` that does not begin with `curl` and ask for `pretty=false`,
-      # so the API server stops pretty-printing at a line matcher. It changes
-      # this render by ZERO objects because both templates are guarded on
-      # `preflight.enabled`, which `infra/yadgar/values.yaml` holds FALSE. That
-      # shield's removal is a separate decision and is not taken here.
+      # K3, THE RENDER DIFF THIS BUMP WAS GATED ON, BEFORE THE MERGE. `prune:
+      # true` and `selfHeal: true` are live below, so a parent rendering FEWER
+      # objects deletes the difference unattended. On helm 4.3.0, `--namespace
+      # yadgar` and the six `--api-versions` this chart's `require-api` helpers
+      # and capability guards name, 0.2.38 at `main`'s values against 0.2.42 at
+      # this merge's: 70 objects on both sides; the five `yadgar-nats*` broker
+      # objects (`StatefulSet`, `Service`, `PodDisruptionBudget`,
+      # `Service/yadgar-nats-headless`, `ConfigMap/yadgar-nats-config`) removed;
+      # the five `nats*` objects added, equal to the removed ones in every field
+      # but their names; `NATS_URL` in `Deployment/iam` and `Deployment/gateway`
+      # moved from `nats://yadgar-nats:4222` to `nats://nats:4222`; and the other
+      # 63 objects byte-identical.
+      #
+      # SO THIS SYNC IS A NATS CUTOVER, A DELETE-THEN-ADOPT AND NOT A RENAME
+      # (B5 of `plans/the-one-application-install.md`). Argo prunes the five
+      # `yadgar-nats*` objects and creates five `nats*` ones, and `iam` and
+      # `gateway` roll onto the module default url in the same sync. The two
+      # url lines left `infra/yadgar/values.yaml` in this merge, the retiring
+      # plan's 6a coupling: kept, they dial a Service 0.2.42 does not render,
+      # and `scripts/tests/test_no_two_owners.py` reddens.
       #
       # `0.2.36` OR LATER SPECIFICALLY, and an earlier parent is not
       # interchangeable. 0.2.36 is the first parent carrying all three hardened
@@ -103,14 +112,8 @@ spec:
       # `argocd.argoproj.io/sync-options: Prune=false` and an OMITTABLE
       # `storage.className`. The values file's three `className: standard` lines
       # are meaningless against a parent without them. All three `-db` pins are
-      # unchanged at `0.2.38`, so that property holds here too.
-      #
-      # `0.2.37` IS NOT SKIPPED BY THIS LINE, IT IS PASSED THROUGH. Its only
-      # change is an `ignoreDifferences` block added to `example/application.yaml`
-      # — the file an adopter COPIES, which this chart does not render. THIS
-      # Application now carries the same block itself, below, because this
-      # render does contain the three MariaDB CRs as of merge B.
-      targetRevision: 0.2.38
+      # unchanged at `0.2.42`, so that property holds here too.
+      targetRevision: 0.2.42
       helm:
         valueFiles:
           - $self/infra/yadgar/values.yaml
