@@ -94,7 +94,16 @@ TARGET_NAMESPACE = "yadgar"
 #
 # SO THE LINE MOVES IN MERGE A'S OWN COMMIT. Deleting the Application without
 # moving it reddens C2 on the merge itself.
-EXPECTED_DEPLOY_TUPLES = 34
+#
+# 21 AFTER STEP 5, which deletes `infra/internal-tls-app.yaml` and its
+# directory in ONE merge. That Application sourced 13 tuples — the internal
+# CA's Certificate, its two Issuers and the ten leaves — and the parent at
+# 0.2.38 with `platform.internalCA.create` and `platform.certificates.create`
+# true renders exactly those 13 and nothing else. Measured 2026-09-27: 34
+# before the merge and 21 after. Restoring the Application AND its directory
+# reads 34 with 13 two-owner failures; restoring either one alone reads 21,
+# because an Application whose path is absent sources nothing.
+EXPECTED_DEPLOY_TUPLES = 21
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
@@ -532,3 +541,59 @@ def test_the_toggle_without_the_deletion_reddens(tmp_path: Path) -> None:
         ("", "Service", "valkey"),
         ("networking.k8s.io", "NetworkPolicy", "valkey-ingress"),
     }, render(failures, examined)
+
+
+# ── ZERO OWNERS, THE OTHER HALF OF THE ORDERING ──────────────────────────────
+# C1 refuses TWO owners and is blind to NONE: step 5 with its deletion kept and
+# its flip dropped reads 0 over 21 and passes, while the `yadgar` Application
+# renders none of the 13 objects `internal-tls` owned — the live CA and its
+# leaves would then have no healer at all. So every tuple a retired Application
+# owned is asserted to be in P. Measured 2026-09-27 at the pinned 0.2.38.
+RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
+    "internal-tls": frozenset(
+        {("cert-manager.io", "Issuer", "yadgar-internal-selfsign")}
+        | {("cert-manager.io", "Issuer", "yadgar-internal-ca")}
+        | {("cert-manager.io", "Certificate", "yadgar-internal-ca")}
+        | {
+            ("cert-manager.io", "Certificate", f"{name}-tls")
+            for name in (
+                "iam", "iam-db", "task", "task-db", "project", "project-db",
+                "gateway-client", "iam-client", "task-client", "project-client",
+            )
+        }
+    ),
+}
+
+
+def orphans(tree: Path, overrides: tuple[str, ...] = ()) -> list[tuple[str, tuple[str, str, str]]]:
+    """Every retired tuple the parent render does NOT carry, with its old owner."""
+    parent = parent_side(tree, overrides)
+    return sorted(
+        (owner, candidate)
+        for owner, retired in RETIRED_TUPLES.items()
+        for candidate in retired
+        if candidate not in parent
+    )
+
+
+def test_every_retired_object_has_the_parent_as_its_owner(working_tree: Path) -> None:
+    """No object a retired Application owned is left with NO owner."""
+    examined = sum(len(retired) for retired in RETIRED_TUPLES.values())
+    print(f"[zero-owners gate] {examined} retired tuple(s) examined")
+    assert examined == 13
+    missing = orphans(working_tree)
+    assert not missing, f"{len(missing)} retired object(s) have no owner: {missing}"
+
+
+def test_the_deletion_without_the_toggle_reddens(tmp_path: Path) -> None:
+    """Red case: step 5's deletion kept, its flip dropped. All 13 are orphaned."""
+    missing = orphans(
+        a_copy_of_the_tree(tmp_path),
+        overrides=(
+            "--set",
+            "platform.internalCA.create=false",
+            "--set",
+            "platform.certificates.create=false",
+        ),
+    )
+    assert {candidate for _, candidate in missing} == RETIRED_TUPLES["internal-tls"], missing
