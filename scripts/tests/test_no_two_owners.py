@@ -1033,3 +1033,99 @@ def test_a_handover_without_the_annotation_reddens(tmp_path: Path) -> None:
     assert missing == [
         ("infra/tls/gateway.yaml", ("gateway.networking.k8s.io", "Gateway", "edge"))
     ], missing
+
+
+# ── K3 OF THE LAST RE-PIN, ENCODED ───────────────────────────────────────────
+# K3 of `plans/the-one-application-install.md`: this organisation's render at
+# the previous pin against its render at the current pin, SAME values file.
+# `prune: true` and `selfHeal: true` apply whatever the difference is, so the
+# difference is written down here and any other one reddens.
+#
+# THE PREVIOUS PIN IS PULLED FROM THE REGISTRY, not read from git, so a depth-1
+# CI checkout runs it. The values file is the current one on both sides, which
+# is right only for a re-pin that does not touch `infra/yadgar/values.yaml`.
+# The next merge that changes the values file or the pin rewrites this block.
+#
+# 0.2.42 → 0.3.7, measured 2026-09-27 on helm 4.3.0 with the six
+# `--api-versions` above: 70 objects on both sides, 68 byte-identical, and
+# exactly two fields change — the container image digest of
+# `Deployment/gateway` (gateway 0.9.52 → 0.9.53) and of `Deployment/iam`
+# (iam 0.8.44 → 0.8.45). Both module bumps are chart-only (ADR-0808's
+# `global.hostname` fallbacks), and the three `-db` pins are unchanged.
+PREVIOUS_PARENT = "0.2.42"
+EXPECTED_REPIN_CHANGES = frozenset(
+    {
+        ("Deployment", "gateway", "spec.template.spec.containers[0].image"),
+        ("Deployment", "iam", "spec.template.spec.containers[0].image"),
+    }
+)
+
+
+def parent_render_at(tree: Path, version: str, overrides: tuple[str, ...] = ()) -> list:
+    """`parent_render` at `version` instead of the pin `infra/yadgar-app.yaml` names."""
+    application = tree / "infra" / "yadgar-app.yaml"
+    copy = Path(tempfile.mkdtemp()) / "deploy"
+    shutil.copytree(tree, copy, ignore=shutil.ignore_patterns(".git"))
+    text = application.read_text()
+    pinned = re.search(r"^\s*targetRevision:\s*(\d+\.\d+\.\d+)\s*$", text, re.M)
+    assert pinned, "infra/yadgar-app.yaml names no chart version"
+    (copy / "infra" / "yadgar-app.yaml").write_text(
+        text[: pinned.start(1)] + version + text[pinned.end(1) :]
+    )
+    try:
+        return parent_render(copy, overrides)
+    finally:
+        shutil.rmtree(copy.parent, ignore_errors=True)
+
+
+def field_changes(before: list, after: list) -> set[tuple[str, str, str]]:
+    """`(kind, name, field path)` for every field that differs, plus whole objects."""
+    def index(documents):
+        return {
+            (d["kind"], d["metadata"]["name"]): d
+            for d in documents
+            if isinstance(d, dict) and d.get("kind")
+        }
+
+    changes: set[tuple[str, str, str]] = set()
+
+    def walk(kind: str, name: str, old, new, path: str) -> None:
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in set(old) | set(new):
+                walk(kind, name, old.get(key), new.get(key), f"{path}.{key}".lstrip("."))
+        elif isinstance(old, list) and isinstance(new, list) and len(old) == len(new):
+            for position, (a, b) in enumerate(zip(old, new)):
+                walk(kind, name, a, b, f"{path}[{position}]")
+        elif old != new:
+            changes.add((kind, name, path))
+
+    old, new = index(before), index(after)
+    for key in old.keys() | new.keys():
+        if key not in old or key not in new:
+            changes.add((*key, "<object added or removed>"))
+        else:
+            walk(*key, old[key], new[key], "")
+    return changes
+
+
+def test_the_repin_changes_only_what_k3_measured(working_tree: Path) -> None:
+    """K3: previous pin against current pin, same values; only the two digests move."""
+    before = parent_render_at(working_tree, PREVIOUS_PARENT)
+    after = parent_render(working_tree)
+    changes = field_changes(before, after)
+    print(f"[K3 re-pin] {len(after)} object(s), {len(changes)} changed field(s)")
+    assert changes == EXPECTED_REPIN_CHANGES, sorted(changes ^ EXPECTED_REPIN_CHANGES)
+
+
+def test_a_value_moved_by_the_repin_reddens_k3(working_tree: Path) -> None:
+    """Red case: a field K3 did not measure changes on the new side, and is named."""
+    before = parent_render_at(working_tree, PREVIOUS_PARENT)
+    after = parent_render(
+        working_tree, ("--set-string", "gateway.nats.url=nats://elsewhere:4222")
+    )
+    unexpected = field_changes(before, after) - EXPECTED_REPIN_CHANGES
+    assert unexpected, "a moved NATS_URL went unnoticed"
+    assert all(kind == "Deployment" and name == "gateway" for kind, name, _ in unexpected), (
+        unexpected
+    )
+    assert all(".env[" in field for _, _, field in unexpected), unexpected
