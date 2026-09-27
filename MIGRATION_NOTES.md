@@ -2372,8 +2372,11 @@ $K -n argocd get application yadgar \
 # expect: 0.2.38 Synced/Healthy
 
 # Record the cutover. Leave this running in a second terminal through the sync.
+# `.object.` PATHS, because `--output-watch-events` wraps each Pod in a watch
+# event: plain `.metadata.name` prints `<none>` on every line (measured
+# 2026-09-27), and the grep below would then drop them all.
 $K -n yadgar get pods -w --output-watch-events \
-  -o 'custom-columns=EVENT:.type,NAME:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[*].ready,DELETING:.metadata.deletionTimestamp' \
+  -o 'custom-columns=EVENT:.type,NAME:.object.metadata.name,PHASE:.object.status.phase,READY:.object.status.containerStatuses[*].ready,DELETING:.object.metadata.deletionTimestamp' \
   | grep --line-buffered -E 'nats|^EVENT|iam-[a-z0-9]+-|gateway-[a-z0-9]+-' \
   | while IFS= read -r line; do printf '%s %s\n' "$(date -u +%H:%M:%S.%N)" "$line"; done \
   | tee /tmp/b5-cutover.log
