@@ -350,8 +350,10 @@ platform:
 
   # ── STILL `deploy`'S ───────────────────────────────────────────────────────
   # Each line names the step that moves it and the copy that has to go first.
+  # Step 9 runs as TWO merges with hand step A5b between (ADR-0810). The
+  # first deleted `infra/bootstrap/`; the second turns `create` on.
   bootstrap:
-    create: false # step 9, with infra/bootstrap/
+    create: false # step 9's second merge, after A5b
     iamKeys:
       create: false # step 9, and the Secret it mints is unrecoverable
 
