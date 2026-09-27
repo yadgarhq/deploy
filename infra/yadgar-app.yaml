@@ -71,6 +71,10 @@ spec:
       # platform 0.1.19. Against `0.2.42` three moved: gateway 0.9.52 → 0.9.53,
       # iam 0.8.44 → 0.8.45 and platform 0.1.17 → 0.1.19. The three `-db` pins
       # did not move, so no `-db` image changes and no migration runs.
+      # `push_validation` for the tag's commit `f648e88` is `success` on its
+      # `main` push run (36332537349); the `v0.3.7` tag-push run skips that
+      # job. That read is the only gate this pin has, because
+      # `ci-release.yaml`'s `release` job carries no `needs:` on it.
       #
       # K3 AT THIS BUMP, BEFORE THE MERGE, with `infra/yadgar/values.yaml`
       # unchanged on both sides and the six `--api-versions` the gate uses

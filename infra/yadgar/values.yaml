@@ -70,9 +70,21 @@ global:
 # siblings are DIALS — whether gateway speaks TLS TO that module. Two different
 # questions on keys one character apart.
 #
-# NO `networkPolicy` KEY, DELIBERATELY. The `gateway-ingress` policy belongs to
-# the `network-policies` Application (`infra/network-policies/`), so asking the
-# chart for one too would give the object two owners.
+# `networkPolicy` IS THE EDGE'S INGRESS ALLOW-LIST, AS OF STEP 8 of
+# `plans/retiring-the-deploy-copies.md` (ADR-0685's recorded alternative: a
+# `from` supplied by values). The merge that set it deleted
+# `infra/network-policies-app.yaml` and `infra/network-policies/gateway-ingress.yaml`,
+# whose spec the chart now renders field for field under the same name; the
+# chart adds only the label `app: gateway`. `deploy#70` put `Prune=false` on the
+# copy one merge ahead, so the handover is an adoption.
+#
+# THE PEER IS DERIVED FROM THE GATEWAY'S NAME. Envoy Gateway stamps
+# `owning-gateway-name`/`-namespace` from `Gateway/edge`, which `platform`
+# renders from `platform.gatewayListener.gatewayName` (default `edge`) into
+# this release's namespace. Rename either and this peer selects no pod: every
+# external call times out while every pod stays Ready (ADR-0685). Change the
+# two in one diff. The chart refuses an enabled policy with no `clients`,
+# rather than rendering an allow-all.
 gateway:
   autoscaling: { enabled: true }
   sourceAddress: { trustedProxyHops: "" }
@@ -82,6 +94,18 @@ gateway:
   iam: { tls: { enabled: true } } # DIAL to iam
   task: { tls: { enabled: true } } # DIAL to task
   project: { tls: { enabled: true } } # DIAL to project
+  networkPolicy:
+    enabled: true
+    clients:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: envoy-gateway-system
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: edge
+            gateway.envoyproxy.io/owning-gateway-namespace: yadgar
+    scrapeFrom: { namespace: observability }
   # NO `nats.url`, AS OF B5: the module default `nats://nats:4222` names the
   # parent's broker, which `platform` renders as `nats` from 0.1.15
   # (`fullnameOverride`, ADR-0805; parent 0.2.42 pins 0.1.17). See
