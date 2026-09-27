@@ -43,6 +43,9 @@
 # digest. The two `nats.url` lines below change exactly 2 lines of the render —
 # the `NATS_URL` value in `Deployment/iam` and in `Deployment/gateway` — and
 # add or remove no object. Both Deployments roll.
+#
+# STILL 70 AS OF STEP 6's THIRD MERGE, byte-identical: that merge deletes
+# `infra/nats.yaml` and does not touch this file.
 
 # ── GATEWAY ──────────────────────────────────────────────────────────────────
 # `tls.enabled` is gateway's OWN listener. `gateway.iam.tls.enabled` and its two
@@ -239,8 +242,15 @@ platform:
   # clustered, so during that merge's roll an `iam` pod and a `gateway` pod can
   # sit on different brokers and an invalidation crosses nothing; gateway's
   # credential cache TTL (`YADGAR_CREDENTIAL_TTL_SECONDS`, 30 here) bounds the
-  # stale answer. `infra/nats.yaml` stays until the third merge, so a revert of
-  # the second finds the old broker still serving.
+  # stale answer. `infra/nats.yaml` stayed until the third merge, so a revert of
+  # the second found the old broker still serving.
+  #
+  # THE THIRD MERGE DELETED `infra/nats.yaml`, SO THIS IS NOW THE ONLY BROKER
+  # ANY APPLICATION RENDERS. No Application carries a finalizer, so the delete
+  # ORPHANED `deploy`'s five objects (`StatefulSet`, `Service`,
+  # `PodDisruptionBudget` `nats`, `Service/nats-headless`,
+  # `ConfigMap/nats-config`) rather than deleting them; nothing dials them.
+  # B4b in MIGRATION_NOTES.md deletes them by hand before B5.
   nats:
     create: true
 

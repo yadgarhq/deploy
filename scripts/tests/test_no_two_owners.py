@@ -115,7 +115,15 @@ TARGET_NAMESPACE = "yadgar"
 # own release name. Measured 2026-09-27 at the pinned 0.2.38: 21 before and 20
 # after. Step 6's second merge deletes nothing, so 20 appears twice in the
 # ladder; its third merge deletes `infra/nats.yaml` and moves this to 15.
-EXPECTED_DEPLOY_TUPLES = 20
+#
+# 15 AFTER STEP 6's THIRD MERGE, which deletes `infra/nats.yaml`. That
+# Application was D's one CHART source, rendered at release `nats`: exactly
+# five tuples — `StatefulSet`, `Service`, `PodDisruptionBudget` `nats`,
+# `Service/nats-headless` and `ConfigMap/nats-config` — and the live
+# Application tracks the same five. Measured 2026-09-27 at the pinned 0.2.38:
+# 20 before and 15 after. D now holds no chart source at all, so this gate no
+# longer reaches `nats-io.github.io`.
+EXPECTED_DEPLOY_TUPLES = 15
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
@@ -588,6 +596,19 @@ RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
     "network-policies/nats-ingress.yaml": frozenset(
         {("networking.k8s.io", "NetworkPolicy", "nats-ingress")}
     ),
+    # STEP 6, THIRD MERGE, AND WHY IT ADDS NO ENTRY. `infra/nats.yaml`'s five
+    # tuples — `StatefulSet`, `Service`, `PodDisruptionBudget` `nats`,
+    # `Service/nats-headless`, `ConfigMap/nats-config` — are NOT in P: the
+    # parent at 0.2.38 renders the broker as `yadgar-nats*`. An entry here
+    # would redden on every one of them, correctly, because nothing takes those
+    # NAMES over; the live objects are orphaned, not handed over, and B4b of
+    # `plans/the-one-application-install.md` deletes them by hand.
+    #
+    # WHAT THIS DICT GUARDS FOR OTHER STEPS, THE BROKER-URL GATE BELOW GUARDS
+    # HERE: the question that matters is not "does P render `nats`" but "does
+    # any client still dial it". Every `nats://` host in P must be a Service P
+    # renders, so a url left on `nats` reddens this merge rather than leaving
+    # a client with no broker.
 }
 
 # THE COUNT THE ZERO-OWNERS TEST ASSERTS, written down so that an entry dropped
@@ -646,11 +667,11 @@ def test_restoring_the_nats_policy_reddens_the_gate(tmp_path: Path) -> None:
 
     EXACTLY ONE TUPLE, and that one number is the claim this merge rests on.
     `platform.nats.create` renders six objects and five of them are
-    `yadgar-nats*`, which nothing in `deploy` holds — `infra/nats.yaml` is
-    still sourced and renders `nats`, `nats-headless` and so on. A second
-    failure here would mean the two brokers share a name, which is the state
-    step 6a's `fullnameOverride` creates and the reason that bump waits for the
-    third merge.
+    `yadgar-nats*`, which nothing in `deploy` holds — `infra/nats.yaml`,
+    until the third merge deleted it, rendered `nats`, `nats-headless` and so
+    on. A second failure here would mean the two brokers share a name, which
+    is the state step 6a's `fullnameOverride` creates and the reason that bump
+    waits for the third merge.
     """
     tree = a_copy_of_the_tree(tmp_path)
     (tree / "infra" / "network-policies" / "nats-ingress.yaml").write_text(
