@@ -137,7 +137,12 @@ TARGET_NAMESPACE = "yadgar"
 # they are the four `yadgar-tls-preflight` objects plus
 # `ClusterIssuer/yadgar-dev-ca`, none of which the parent renders. Measured
 # 2026-09-27 at the pinned 0.3.7: 15 before and 11 after.
-EXPECTED_DEPLOY_TUPLES = 11
+#
+# 10 AFTER STEP 8, which deletes `infra/network-policies-app.yaml` and its
+# directory — `gateway-ingress.yaml` was the one file left in it — and sets
+# `gateway.networkPolicy.enabled` true. The Application sourced exactly one
+# tuple. Measured 2026-09-27 at the pinned 0.3.7: 11 before and 10 after.
+EXPECTED_DEPLOY_TUPLES = 10
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
@@ -445,6 +450,35 @@ metadata:
 """
 
 
+# STEP 8 RETIRED `network-policies` WHOLE, so the red cases that restore a
+# policy file restore the Application that sourced it too — D is derived from
+# Applications, and a file nothing sources is not an owner.
+RESTORED_NETWORK_POLICIES_APPLICATION = """
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: network-policies
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/network-policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+"""
+
+
+def restore_network_policies(tree: Path) -> None:
+    """The retired `network-policies` Application and its (empty) directory."""
+    (tree / "infra" / "network-policies").mkdir(exist_ok=True)
+    (tree / "infra" / "network-policies-app.yaml").write_text(
+        RESTORED_NETWORK_POLICIES_APPLICATION
+    )
+
+
 def a_copy_of_the_tree(tmp_path: Path) -> Path:
     """The repository, copied, so no red case can touch the working tree.
 
@@ -562,6 +596,7 @@ def test_the_toggle_without_the_deletion_reddens(tmp_path: Path) -> None:
     (tree / "infra" / "valkey").mkdir()
     (tree / "infra" / "valkey" / "valkey.yaml").write_text(RESTORED_VALKEY_OBJECTS)
     (tree / "infra" / "valkey-app.yaml").write_text(RESTORED_VALKEY_APPLICATION)
+    restore_network_policies(tree)
     (tree / "infra" / "network-policies" / "valkey-ingress.yaml").write_text(
         RESTORED_VALKEY_INGRESS
     )
@@ -639,12 +674,19 @@ RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
             ("gateway.networking.k8s.io", "Gateway", "edge"),
         }
     ),
+    # STEP 8. `network-policies` is retired whole: `gateway-ingress` was the
+    # last object it sourced. `deploy#70` put `Prune=false` on the source copy
+    # one merge ahead, so the handover is an adoption.
+    "network-policies": frozenset(
+        {("networking.k8s.io", "NetworkPolicy", "gateway-ingress")}
+    ),
 }
 
 # THE COUNT THE ZERO-OWNERS TEST ASSERTS, written down so that an entry dropped
 # from the dict above reddens rather than shrinks what is examined. 13 from
-# step 5, 1 from step 6's first merge, 5 from B5 and 4 from step 7.
-EXPECTED_RETIRED_TUPLES = 23
+# step 5, 1 from step 6's first merge, 5 from B5, 4 from step 7 and 1 from
+# step 8.
+EXPECTED_RETIRED_TUPLES = 24
 
 
 def orphans(tree: Path, overrides: tuple[str, ...] = ()) -> list[tuple[str, tuple[str, str, str]]]:
@@ -704,6 +746,7 @@ def test_restoring_the_nats_policy_reddens_the_gate(tmp_path: Path) -> None:
     waits for the third merge.
     """
     tree = a_copy_of_the_tree(tmp_path)
+    restore_network_policies(tree)
     (tree / "infra" / "network-policies" / "nats-ingress.yaml").write_text(
         RESTORED_NATS_INGRESS
     )
@@ -965,47 +1008,66 @@ def test_a_url_on_deploys_broker_resolves_but_is_not_the_parents(tmp_path: Path)
 # THE TOGGLES OF THE NEXT HANDOVER, NOT THE CURRENT VALUES FILE. The set of
 # guarded objects is MEASURED, never listed: it is D ∩ P with P rendered at the
 # toggles the next step flips. Step 7's four `infra/tls/` objects were guarded
-# here by `deploy#68` and left with step 7's merge.
+# by `deploy#68`, and step 8's `gateway-ingress` by `deploy#70`; each left with
+# its step's merge.
 #
-# STEP 8 of `plans/retiring-the-deploy-copies.md` is next. It deletes
-# `infra/network-policies/gateway-ingress.yaml` and sets
-# `gateway.networkPolicy.enabled` true, with `clients` carrying the file's
-# envoy peer and `scrapeFrom.namespace: observability` — the chart REFUSES an
-# enabled policy with no `clients`, so the peer is part of the toggle. Measured
-# 2026-09-27 at the pinned 0.3.7: the handover set is exactly
-# `NetworkPolicy/gateway-ingress`, under the same name. Its `Prune=false`
-# lands in step 7's merge, which is one merge ahead of step 8.
+# STEP 9 of `plans/retiring-the-deploy-copies.md` is next: `bootstrap`, behind
+# `platform.bootstrap.create` and `platform.bootstrap.iamKeys.create`. Measured
+# 2026-09-27 at the pinned 0.3.7, the parent renders ALL FIVE of
+# `infra/bootstrap/`'s names — `Job/bootstrap-secrets`,
+# `Job/admin-bootstrap-token`, and `ServiceAccount`, `Role` and `RoleBinding`
+# `bootstrap-secrets` — and renders every one of them as a HELM HOOK
+# (`helm.sh/hook: pre-install,pre-upgrade`, which Argo runs as `PreSync`).
 #
-# WHEN STEP 8 MERGES, the file leaves with it and this reads 0. That merge moves
-# `NEXT_HANDOVER` to step 9's toggles (`platform.bootstrap.create`) and resets
-# the count.
+# A HOOK IS NOT ADOPTED, SO `Prune=false` DOES NOT MAKE STEP 9 AN ADOPTION.
+# Argo does not track a hook as a resource of the Application: it creates it
+# on each sync under the hook's delete policy. So the tracked handover set is
+# EMPTY, and the five same-name hook objects are counted separately, by name,
+# as the question step 9 (A5, NEEDS-MAX) has to answer on its own terms — not
+# one this guard can settle with an annotation. No `Prune=false` pre-merge for
+# step 9 rides in step 8's merge: `plans/the-one-application-install.md` asks
+# for one at A3 and A4 only, and on these files it would not be annotation-only
+# (both Jobs carry `Replace=true,Force=true`, so a `bootstrap` resync deletes
+# and re-runs them).
 NEXT_HANDOVER: tuple[str, ...] = (
     "--set",
-    "gateway.networkPolicy.enabled=true",
-    "--set-json",
-    'gateway.networkPolicy.clients=[{"namespaceSelector":{"matchLabels":'
-    '{"kubernetes.io/metadata.name":"envoy-gateway-system"}},"podSelector":'
-    '{"matchLabels":{"app.kubernetes.io/name":"envoy",'
-    '"gateway.envoyproxy.io/owning-gateway-name":"edge",'
-    '"gateway.envoyproxy.io/owning-gateway-namespace":"yadgar"}}}]',
+    "platform.bootstrap.create=true",
     "--set",
-    "gateway.networkPolicy.scrapeFrom.namespace=observability",
+    "platform.bootstrap.iamKeys.create=true",
 )
-EXPECTED_HANDOVERS = 1
+EXPECTED_HANDOVERS = 0
+EXPECTED_HOOK_HANDOVERS = frozenset(
+    {
+        ("batch", "Job", "bootstrap-secrets"),
+        ("batch", "Job", "admin-bootstrap-token"),
+        ("", "ServiceAccount", "bootstrap-secrets"),
+        ("rbac.authorization.k8s.io", "Role", "bootstrap-secrets"),
+        ("rbac.authorization.k8s.io", "RoleBinding", "bootstrap-secrets"),
+    }
+)
+HOOK_ANNOTATION = "helm.sh/hook"
 PRUNE_FALSE = "Prune=false"
 
 
 def unguarded_handovers(
     tree: Path, overrides: tuple[str, ...] = NEXT_HANDOVER
-) -> tuple[list[tuple[str, tuple[str, str, str]]], int]:
-    """Every D document the parent renders at `overrides` that lacks `Prune=false`.
+) -> tuple[list[tuple[str, tuple[str, str, str]]], int, set[tuple[str, str, str]]]:
+    """Every D document the parent renders, TRACKED, at `overrides` without `Prune=false`.
 
     READS THE DOCUMENTS, NOT THE TUPLES, because the annotation lives on the
     source copy. RETURNS the count examined alongside, so an empty answer over
-    zero handovers cannot pass as a guarded one.
+    zero handovers cannot pass as a guarded one, and the D tuples the parent
+    renders only as HOOKS, which no annotation turns into an adoption.
     """
-    parent = parent_side(tree, overrides)
+    tracked: set[tuple[str, str, str]] = set()
+    hooks: set[tuple[str, str, str]] = set()
+    for document in parent_render(tree, overrides):
+        if not isinstance(document, dict):
+            continue
+        annotations = (document.get("metadata") or {}).get("annotations") or {}
+        (hooks if HOOK_ANNOTATION in annotations else tracked).update(tuples_of([document]))
     missing: list[tuple[str, tuple[str, str, str]]] = []
+    hooked: set[tuple[str, str, str]] = set()
     examined = 0
     for _, application in applications(tree):
         if (application.get("metadata") or {}).get("name") == PARENT_APPLICATION:
@@ -1016,42 +1078,54 @@ def unguarded_handovers(
         for manifest in sorted((tree / path).glob("*.yaml")):
             for document in yaml.safe_load_all(manifest.read_text()):
                 found = tuples_of([document])
-                if not found or not found <= parent:
+                if found and found <= hooks:
+                    hooked |= found
+                if not found or not found <= tracked:
                     continue
                 examined += 1
                 annotations = (document.get("metadata") or {}).get("annotations") or {}
                 options = str(annotations.get("argocd.argoproj.io/sync-options", ""))
                 if PRUNE_FALSE not in [option.strip() for option in options.split(",")]:
                     missing.append((str(manifest.relative_to(tree)), next(iter(found))))
-    return sorted(missing), examined
+    return sorted(missing), examined, hooked
 
 
 def test_every_object_the_next_step_hands_over_is_never_pruned(working_tree: Path) -> None:
-    """Every object the next step hands over carries `Prune=false`."""
-    missing, examined = unguarded_handovers(working_tree)
-    print(f"[handover guard] {examined} object(s) the next step hands over")
+    """Every TRACKED object the next step hands over carries `Prune=false`."""
+    missing, examined, _ = unguarded_handovers(working_tree)
+    print(f"[handover guard] {examined} tracked object(s) the next step hands over")
     assert examined == EXPECTED_HANDOVERS, (
-        f"the next step hands over {examined} object(s); the measured count is "
-        f"{EXPECTED_HANDOVERS}"
+        f"the next step hands over {examined} tracked object(s); the measured "
+        f"count is {EXPECTED_HANDOVERS}"
     )
     assert not missing, f"{len(missing)} handover(s) without {PRUNE_FALSE}: {missing}"
 
 
-def test_a_handover_without_the_annotation_reddens(tmp_path: Path) -> None:
-    """Red case: strip the annotation from `gateway-ingress`, and it alone is named."""
-    tree = a_copy_of_the_tree(tmp_path)
-    gateway = tree / "infra" / "network-policies" / "gateway-ingress.yaml"
-    documents = list(yaml.safe_load_all(gateway.read_text()))
-    for document in documents:
-        if isinstance(document, dict):
-            (document.get("metadata") or {}).pop("annotations", None)
-    gateway.write_text(yaml.safe_dump_all(documents))
+def test_the_next_step_hands_over_its_hooks_by_name(working_tree: Path) -> None:
+    """Step 9's five `infra/bootstrap/` names render as hooks, named, not counted away."""
+    _, _, hooked = unguarded_handovers(working_tree)
+    print(f"[handover guard] {len(hooked)} object(s) the parent renders only as hooks")
+    assert hooked == EXPECTED_HOOK_HANDOVERS, sorted(hooked ^ EXPECTED_HOOK_HANDOVERS)
 
-    missing, examined = unguarded_handovers(tree)
-    assert examined == EXPECTED_HANDOVERS
+
+RESTORED_GATEWAY_INGRESS = """
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  namespace: yadgar
+"""
+
+
+def test_a_tracked_handover_without_the_annotation_reddens(tmp_path: Path) -> None:
+    """Red case: a same-name TRACKED object in a surviving source, unannotated, is named."""
+    tree = a_copy_of_the_tree(tmp_path)
+    (tree / "infra" / "tls" / "gateway-ingress.yaml").write_text(RESTORED_GATEWAY_INGRESS)
+    missing, examined, _ = unguarded_handovers(tree)
+    assert examined == EXPECTED_HANDOVERS + 1
     assert missing == [
         (
-            "infra/network-policies/gateway-ingress.yaml",
+            "infra/tls/gateway-ingress.yaml",
             ("networking.k8s.io", "NetworkPolicy", "gateway-ingress"),
         )
     ], missing
@@ -1283,3 +1357,91 @@ def test_restoring_a_deleted_edge_copy_reddens_the_gate(tmp_path: Path) -> None:
         ("gateway.networking.k8s.io", "GatewayClass", "eg"),
     }, render(failures, examined)
     assert examined == EXPECTED_DEPLOY_TUPLES + 1, render(failures, examined)
+
+
+# ── K3 OF STEP 8, ENCODED ────────────────────────────────────────────────────
+# FIRST, the values move adds `NetworkPolicy/gateway-ingress` and changes
+# nothing else: 74 objects reverted, 75 now, 74 identical, measured 2026-09-27
+# at the pinned 0.3.7. SECOND, the rendered policy's SPEC equals the deleted
+# copy's field for field. Its metadata differs by one label the gateway chart
+# stamps (`app: gateway`), which selects nothing and admits nothing; namespace
+# and annotations are ignored for the reasons step 7's comparison gives.
+STEP_8_REVERTED: tuple[str, ...] = ("--set", "gateway.networkPolicy.enabled=false")
+DELETED_GATEWAY_INGRESS = """
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+spec:
+  podSelector:
+    matchLabels: { app: gateway }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: envoy-gateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: envoy
+              gateway.envoyproxy.io/owning-gateway-name: edge
+              gateway.envoyproxy.io/owning-gateway-namespace: yadgar
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 9090
+"""
+EXPECTED_GATEWAY_INGRESS_METADATA_CHANGES = frozenset(
+    {("NetworkPolicy", "gateway-ingress", "metadata.labels")}
+)
+
+
+def gateway_ingress_differences(rendered: list) -> set[tuple[str, str, str]]:
+    """Fields where the rendered `gateway-ingress` differs from the deleted copy."""
+    def comparable(document: dict) -> dict:
+        metadata = dict(document.get("metadata") or {})
+        metadata.pop("namespace", None)
+        metadata.pop("annotations", None)
+        return {**document, "metadata": metadata}
+
+    ours = [
+        comparable(d)
+        for d in rendered
+        if isinstance(d, dict)
+        and d.get("kind") == "NetworkPolicy"
+        and (d.get("metadata") or {}).get("name") == "gateway-ingress"
+    ]
+    return field_changes([comparable(yaml.safe_load(DELETED_GATEWAY_INGRESS))], ours)
+
+
+def test_step_8_adds_the_policy_and_changes_nothing_else(working_tree: Path) -> None:
+    """K3, first half: the values move is exactly one added object."""
+    before = parent_render(working_tree, STEP_8_REVERTED)
+    after = parent_render(working_tree)
+    changes = field_changes(before, after)
+    print(f"[K3 step 8] {len(before)} -> {len(after)} object(s), {len(changes)} change(s)")
+    assert changes == {("NetworkPolicy", "gateway-ingress", "<object added or removed>")}, sorted(
+        changes
+    )
+
+
+def test_the_rendered_policy_equals_the_deleted_copy(working_tree: Path) -> None:
+    """K3, second half: the spec is field-equal; only the chart's label differs."""
+    differences = gateway_ingress_differences(parent_render(working_tree))
+    print(f"[K3 step 8] 1 policy compared, {len(differences)} field(s) differ: {sorted(differences)}")
+    assert differences == EXPECTED_GATEWAY_INGRESS_METADATA_CHANGES, sorted(differences)
+
+
+def test_a_narrowed_peer_reddens_the_policy_comparison(working_tree: Path) -> None:
+    """Red case: a scrape namespace moved in values is named as a spec field."""
+    differences = gateway_ingress_differences(
+        parent_render(working_tree, ("--set", "gateway.networkPolicy.scrapeFrom.namespace=monitoring"))
+    )
+    extra = differences - EXPECTED_GATEWAY_INGRESS_METADATA_CHANGES
+    assert extra and all(field.startswith("spec.ingress") for _, _, field in extra), differences

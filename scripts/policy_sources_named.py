@@ -79,8 +79,22 @@ REPOSITORY = Path(__file__).resolve().parent.parent
 # `nats-ingress` LEFT THE SAME WAY, at step 6's first merge, behind
 # `platform.nats.create`. Two is now the number of policies this repository
 # declares, and either one going missing still reddens.
+#
+# `gateway-ingress` LEFT THE SAME WAY, at step 8, behind
+# `gateway.networkPolicy.enabled`. The same assertions run where the policy is
+# now declared, in `yadgarhq/gateway`'s `scripts/tests/test_ingress_policy.py`
+# at v0.9.53, the version the pinned parent 0.3.7 carries (ADR-0804):
+# `test_the_policy_admits_from_every_source_only_where_written_down`,
+# `test_a_from_less_rule_added_to_the_policy_reddens_the_allow_all_census` and
+# `test_a_from_written_as_an_empty_list_is_seen_too`. `deploy`'s own
+# `scripts/tests/test_no_two_owners.py` holds the rendered spec equal to the
+# deleted copy at this organisation's values.
+#
+# ONE POLICY IS LEFT, AND IT DECLARES NO INGRESS RULE. `estate-front-egress`'s
+# `set()` examines nothing today, so this gate now guards only a FUTURE
+# ingress rule added to it or a new policy added here; the floor still
+# reddens if the policy is renamed or deleted.
 EXPECTED_ALLOW_ALL_PORTS: dict[str, set[int]] = {
-    "gateway-ingress": set(),
     "estate-front-egress": set(),
 }
 
