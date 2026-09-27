@@ -55,6 +55,16 @@
 # `nats://nats:4222`. The other 63 objects are byte-identical. Both
 # Deployments roll.
 
+# ── THE ESTATE'S HOSTNAME, STATED ONCE (ADR-0808) ────────────────────────────
+# `platform` (the Gateway listener and the edge Certificate), `gateway` (the
+# HTTPRoute) and `iam` (the enrolment URL) derive their hostnames from this key
+# when their own keys are empty, which they are here. Empty, it renders the same
+# `gateway.yadgar.internal` in all five places, so stating it changes no object:
+# measured 2026-09-27 at the pinned 0.3.7. It is stated because it is THIS
+# organisation's edge name, and it must agree with the root CA's nameConstraints.
+global:
+  hostname: gateway.yadgar.internal
+
 # ── GATEWAY ──────────────────────────────────────────────────────────────────
 # `tls.enabled` is gateway's OWN listener. `gateway.iam.tls.enabled` and its two
 # siblings are DIALS — whether gateway speaks TLS TO that module. Two different
@@ -84,6 +94,16 @@ iam:
   autoscaling: { enabled: true }
   tls: { enabled: true }
   iamDb: { tls: { enabled: true } }
+  # THE ENROLMENT URL KEEPS ITS PORT, AND `global.hostname` ABOVE WOULD DROP
+  # IT. With `global.hostname` set and this key empty, iam derives
+  # `https://gateway.yadgar.internal` with NO port (ADR-0808: an edge on 443).
+  # This cluster's edge is reached from the host on 18443 (kind's mapping to
+  # node port 30443), and `ENROLMENT_GATEWAY` renders
+  # `https://gateway.yadgar.internal:18443` today, from the chart's no-hostname
+  # fallback. Stated here, so every enrolment token keeps the address a client
+  # can reach. Measured 2026-09-27 at the pinned 0.3.7: without this line,
+  # `global.hostname` changes exactly this one env value and rolls `iam`.
+  enrolment: { gateway: "https://gateway.yadgar.internal:18443" }
   # NO `nats.url`, AS OF B5; see `gateway` above.
   networkPolicy:
     {
@@ -264,12 +284,48 @@ platform:
   nats:
     create: true
 
+  # ── THE EDGE: THE PARENT'S, AS OF STEP 7 ───────────────────────────────────
+  # `infra/tls/{certificate,envoyproxy,gatewayclass,gateway}.yaml` were deleted
+  # in the merge that set these two true. `infra/tls-app.yaml` SURVIVES with
+  # `ca-preflight.yaml` and `clusterissuer.yaml`: the parent renders neither
+  # the preflight nor `ClusterIssuer/yadgar-dev-ca`. `deploy#68` put
+  # `Prune=false` on the four copies one merge ahead, so the handover rewrites
+  # the tracking-id on the same four objects. The four rendered objects equal
+  # the deleted copies field for field (ignoring namespace and that
+  # annotation), measured 2026-09-27 at the pinned 0.3.7 and asserted by
+  # `scripts/tests/test_no_two_owners.py`.
+  edgeTLS:
+    create: true
+    # EXPLICIT, AND LOAD-BEARING. Left empty with `internalCA.create` true,
+    # the chart signs the edge leaf with its internal CA — a root no client
+    # trusts — and cert-manager reissues `gateway-tls` on the handover. The
+    # ClusterIssuer is `deploy`'s own (`infra/tls/clusterissuer.yaml`).
+    issuerRef:
+      name: yadgar-dev-ca
+      kind: ClusterIssuer
+  gatewayListener:
+    create: true
+    envoyProxy:
+      # THIS CLUSTER'S EDGE, NOT THE ADOPTER'S (ADR-0809). Under rootless
+      # podman the host cannot route to container IPs, so there is no
+      # LoadBalancer here: kind maps host 18443 to node port 30443 on the
+      # control-plane node only (`modules/nixos/kind.nix` in the nix repo is
+      # the other half), and the Envoy Service's `externalTrafficPolicy` is
+      # `Local`. So the data plane must run on that node, and the nodePort is
+      # pinned. An unpinned nodePort is allocated at random, and a proxy on a
+      # worker leaves the mapped port with no local endpoint.
+      serviceType: NodePort
+      httpsNodePort: 30443
+      pod:
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+
   # ── STILL `deploy`'S ───────────────────────────────────────────────────────
   # Each line names the step that moves it and the copy that has to go first.
-  edgeTLS:
-    create: false # step 7, with infra/tls/certificate.yaml
-  gatewayListener:
-    create: false # step 7, with infra/tls/{gateway,gatewayclass,envoyproxy}.yaml
   bootstrap:
     create: false # step 9, with infra/bootstrap/
     iamKeys:
