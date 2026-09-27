@@ -129,7 +129,15 @@ TARGET_NAMESPACE = "yadgar"
 # touches no Application, so D does not move. Measured 2026-09-27: 15 at the
 # pinned 0.2.38 before and 15 at the pinned 0.2.42 after, with 0 two-owner
 # failures on both sides.
-EXPECTED_DEPLOY_TUPLES = 15
+#
+# 11 AFTER STEP 7, which deletes `infra/tls/{certificate,envoyproxy,
+# gatewayclass,gateway}.yaml` and sets `platform.edgeTLS.create` and
+# `platform.gatewayListener.create` true. `tls` is a SPLIT, not a retirement:
+# `infra/tls-app.yaml`, `ca-preflight.yaml` and `clusterissuer.yaml` stay, and
+# they are the four `yadgar-tls-preflight` objects plus
+# `ClusterIssuer/yadgar-dev-ca`, none of which the parent renders. Measured
+# 2026-09-27 at the pinned 0.3.7: 15 before and 11 after.
+EXPECTED_DEPLOY_TUPLES = 11
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
@@ -619,12 +627,24 @@ RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
             ("policy", "PodDisruptionBudget", "nats"),
         }
     ),
+    # STEP 7. The `tls` Application SURVIVES (it keeps the ClusterIssuer and
+    # the preflight), so the key names its directory. The four objects are
+    # handed over under the same names; `deploy#68` put `Prune=false` on each
+    # source copy one merge ahead, so the handover is an adoption.
+    "tls/{certificate,envoyproxy,gatewayclass,gateway}.yaml": frozenset(
+        {
+            ("cert-manager.io", "Certificate", "gateway-tls"),
+            ("gateway.envoyproxy.io", "EnvoyProxy", "edge"),
+            ("gateway.networking.k8s.io", "GatewayClass", "eg"),
+            ("gateway.networking.k8s.io", "Gateway", "edge"),
+        }
+    ),
 }
 
 # THE COUNT THE ZERO-OWNERS TEST ASSERTS, written down so that an entry dropped
 # from the dict above reddens rather than shrinks what is examined. 13 from
-# step 5, 1 from step 6's first merge and 5 from B5.
-EXPECTED_RETIRED_TUPLES = 19
+# step 5, 1 from step 6's first merge, 5 from B5 and 4 from step 7.
+EXPECTED_RETIRED_TUPLES = 23
 
 
 def orphans(tree: Path, overrides: tuple[str, ...] = ()) -> list[tuple[str, tuple[str, str, str]]]:
@@ -944,35 +964,34 @@ def test_a_url_on_deploys_broker_resolves_but_is_not_the_parents(tmp_path: Path)
 #
 # THE TOGGLES OF THE NEXT HANDOVER, NOT THE CURRENT VALUES FILE. The set of
 # guarded objects is MEASURED, never listed: it is D ∩ P with P rendered at the
-# toggles the next step flips. Step 7 of `plans/retiring-the-deploy-copies.md`
-# flips `platform.edgeTLS.create` and `platform.gatewayListener.create`, with
-# `edgeTLS.issuerRef` naming `yadgar-dev-ca` as a `ClusterIssuer`. Measured
-# 2026-09-27 at the pinned 0.2.42: the render goes from 70 objects to 74, and
-# the 4 added are exactly `infra/tls/`'s `Certificate/gateway-tls`,
-# `EnvoyProxy/edge`, `GatewayClass/eg` and `Gateway/edge`, under the SAME
-# names. No object in `infra/tls/` is rendered by the parent under a different
-# name; the other five (`ClusterIssuer/yadgar-dev-ca` and the four
-# `yadgar-tls-preflight` objects) are not rendered at all and stay `deploy`'s.
+# toggles the next step flips. Step 7's four `infra/tls/` objects were guarded
+# here by `deploy#68` and left with step 7's merge.
 #
-# THE GATEWAY IS WHY THIS STEP CANNOT SKIP THE GUARD. The live envoy Service
-# and Deployment in `envoy-gateway-system` carry an ownerReference to
-# `GatewayClass/eg`, so a prune-then-create of the class garbage-collects the
-# data plane, and a Gateway recreated with a new uid is reprogrammed.
+# STEP 8 of `plans/retiring-the-deploy-copies.md` is next. It deletes
+# `infra/network-policies/gateway-ingress.yaml` and sets
+# `gateway.networkPolicy.enabled` true, with `clients` carrying the file's
+# envoy peer and `scrapeFrom.namespace: observability` — the chart REFUSES an
+# enabled policy with no `clients`, so the peer is part of the toggle. Measured
+# 2026-09-27 at the pinned 0.3.7: the handover set is exactly
+# `NetworkPolicy/gateway-ingress`, under the same name. Its `Prune=false`
+# lands in step 7's merge, which is one merge ahead of step 8.
 #
-# WHEN STEP 7 MERGES, these four files leave with it and this reads 0 over the
-# same toggles. The step that merges it moves `NEXT_HANDOVER` to the toggles of
-# the step after (step 8: `gateway.networkPolicy.enabled`) and resets the count.
+# WHEN STEP 8 MERGES, the file leaves with it and this reads 0. That merge moves
+# `NEXT_HANDOVER` to step 9's toggles (`platform.bootstrap.create`) and resets
+# the count.
 NEXT_HANDOVER: tuple[str, ...] = (
     "--set",
-    "platform.edgeTLS.create=true",
+    "gateway.networkPolicy.enabled=true",
+    "--set-json",
+    'gateway.networkPolicy.clients=[{"namespaceSelector":{"matchLabels":'
+    '{"kubernetes.io/metadata.name":"envoy-gateway-system"}},"podSelector":'
+    '{"matchLabels":{"app.kubernetes.io/name":"envoy",'
+    '"gateway.envoyproxy.io/owning-gateway-name":"edge",'
+    '"gateway.envoyproxy.io/owning-gateway-namespace":"yadgar"}}}]',
     "--set",
-    "platform.gatewayListener.create=true",
-    "--set",
-    "platform.edgeTLS.issuerRef.name=yadgar-dev-ca",
-    "--set",
-    "platform.edgeTLS.issuerRef.kind=ClusterIssuer",
+    "gateway.networkPolicy.scrapeFrom.namespace=observability",
 )
-EXPECTED_HANDOVERS = 4
+EXPECTED_HANDOVERS = 1
 PRUNE_FALSE = "Prune=false"
 
 
@@ -1008,7 +1027,7 @@ def unguarded_handovers(
 
 
 def test_every_object_the_next_step_hands_over_is_never_pruned(working_tree: Path) -> None:
-    """The four `infra/tls/` objects step 7 hands over each carry `Prune=false`."""
+    """Every object the next step hands over carries `Prune=false`."""
     missing, examined = unguarded_handovers(working_tree)
     print(f"[handover guard] {examined} object(s) the next step hands over")
     assert examined == EXPECTED_HANDOVERS, (
@@ -1019,9 +1038,9 @@ def test_every_object_the_next_step_hands_over_is_never_pruned(working_tree: Pat
 
 
 def test_a_handover_without_the_annotation_reddens(tmp_path: Path) -> None:
-    """Red case: strip the annotation from the Gateway, and it alone is named."""
+    """Red case: strip the annotation from `gateway-ingress`, and it alone is named."""
     tree = a_copy_of_the_tree(tmp_path)
-    gateway = tree / "infra" / "tls" / "gateway.yaml"
+    gateway = tree / "infra" / "network-policies" / "gateway-ingress.yaml"
     documents = list(yaml.safe_load_all(gateway.read_text()))
     for document in documents:
         if isinstance(document, dict):
@@ -1031,51 +1050,132 @@ def test_a_handover_without_the_annotation_reddens(tmp_path: Path) -> None:
     missing, examined = unguarded_handovers(tree)
     assert examined == EXPECTED_HANDOVERS
     assert missing == [
-        ("infra/tls/gateway.yaml", ("gateway.networking.k8s.io", "Gateway", "edge"))
+        (
+            "infra/network-policies/gateway-ingress.yaml",
+            ("networking.k8s.io", "NetworkPolicy", "gateway-ingress"),
+        )
     ], missing
 
 
-# ── K3 OF THE LAST RE-PIN, ENCODED ───────────────────────────────────────────
-# K3 of `plans/the-one-application-install.md`: this organisation's render at
-# the previous pin against its render at the current pin, SAME values file.
-# `prune: true` and `selfHeal: true` apply whatever the difference is, so the
-# difference is written down here and any other one reddens.
+# ── K3 OF STEP 7, ENCODED ────────────────────────────────────────────────────
+# Two halves, and both are what `prune: true` and `selfHeal: true` would apply
+# unattended.
 #
-# THE PREVIOUS PIN IS PULLED FROM THE REGISTRY, not read from git, so a depth-1
-# CI checkout runs it. The values file is the current one on both sides, which
-# is right only for a re-pin that does not touch `infra/yadgar/values.yaml`.
-# The next merge that changes the values file or the pin rewrites this block.
+# FIRST, THE VALUES MOVE ADDS THE FOUR EDGE OBJECTS AND CHANGES NOTHING ELSE.
+# Step 7's keys, reverted with `--set`, against the current values: exactly
+# the four objects differ, and all other objects are byte-identical. That
+# includes `global.hostname`, and only because `iam.enrolment.gateway` is
+# stated: with the hostname set and that key empty, iam derives its enrolment
+# URL with NO port and `ENROLMENT_GATEWAY` loses `:18443` — the red case below.
+# Measured 2026-09-27 at the pinned 0.3.7: 70 objects reverted, 74 now, 70
+# identical. (The re-pin to
+# 0.3.7 was the previous merge, gated on its own K3: two image digests.)
 #
-# 0.2.42 → 0.3.7, measured 2026-09-27 on helm 4.3.0 with the six
-# `--api-versions` above: 70 objects on both sides, 68 byte-identical, and
-# exactly two fields change — the container image digest of
-# `Deployment/gateway` (gateway 0.9.52 → 0.9.53) and of `Deployment/iam`
-# (iam 0.8.44 → 0.8.45). Both module bumps are chart-only (ADR-0808's
-# `global.hostname` fallbacks), and the three `-db` pins are unchanged.
-PREVIOUS_PARENT = "0.2.42"
-EXPECTED_REPIN_CHANGES = frozenset(
+# SECOND, THE FOUR RENDERED OBJECTS EQUAL THE DELETED COPIES FIELD FOR FIELD,
+# ignoring `metadata.namespace` (Argo supplies the destination) and
+# `metadata.annotations` (`Prune=false` was on the copies only). A difference
+# here is a live change on handover: the EnvoyProxy's placement or NodePort, the
+# Gateway's listener, or the Certificate's issuer, which would reissue the edge
+# leaf from another root. The copies are written out below rather than read from
+# git, for the reason the red cases' subjects give: CI clones at depth 1.
+STEP_7_REVERTED: tuple[str, ...] = (
+    "--set",
+    "platform.edgeTLS.create=false",
+    "--set",
+    "platform.gatewayListener.create=false",
+    "--set",
+    "global.hostname=",
+)
+STEP_7_OBJECTS = frozenset(
     {
-        ("Deployment", "gateway", "spec.template.spec.containers[0].image"),
-        ("Deployment", "iam", "spec.template.spec.containers[0].image"),
+        ("Certificate", "gateway-tls"),
+        ("EnvoyProxy", "edge"),
+        ("GatewayClass", "eg"),
+        ("Gateway", "edge"),
     }
 )
-
-
-def parent_render_at(tree: Path, version: str, overrides: tuple[str, ...] = ()) -> list:
-    """`parent_render` at `version` instead of the pin `infra/yadgar-app.yaml` names."""
-    application = tree / "infra" / "yadgar-app.yaml"
-    copy = Path(tempfile.mkdtemp()) / "deploy"
-    shutil.copytree(tree, copy, ignore=shutil.ignore_patterns(".git"))
-    text = application.read_text()
-    pinned = re.search(r"^\s*targetRevision:\s*(\d+\.\d+\.\d+)\s*$", text, re.M)
-    assert pinned, "infra/yadgar-app.yaml names no chart version"
-    (copy / "infra" / "yadgar-app.yaml").write_text(
-        text[: pinned.start(1)] + version + text[pinned.end(1) :]
-    )
-    try:
-        return parent_render(copy, overrides)
-    finally:
-        shutil.rmtree(copy.parent, ignore_errors=True)
+DELETED_EDGE_COPIES = """
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gateway-tls
+spec:
+  secretName: gateway-tls
+  dnsNames:
+    - gateway.yadgar.internal
+  commonName: gateway.yadgar.internal
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - server auth
+  issuerRef:
+    name: yadgar-dev-ca
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: edge
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 2
+        pod:
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+      envoyService:
+        type: NodePort
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              ports:
+                - port: 443
+                  nodePort: 30443
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: eg
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: edge
+spec:
+  gatewayClassName: eg
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: edge
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: gateway.yadgar.internal
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: gateway-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+"""
 
 
 def field_changes(before: list, after: list) -> set[tuple[str, str, str]]:
@@ -1108,24 +1208,74 @@ def field_changes(before: list, after: list) -> set[tuple[str, str, str]]:
     return changes
 
 
-def test_the_repin_changes_only_what_k3_measured(working_tree: Path) -> None:
-    """K3: previous pin against current pin, same values; only the two digests move."""
-    before = parent_render_at(working_tree, PREVIOUS_PARENT)
+def edge_differences(rendered: list) -> set[tuple[str, str, str]]:
+    """Fields where the rendered edge objects differ from the deleted copies."""
+    def comparable(document: dict) -> dict:
+        metadata = dict(document.get("metadata") or {})
+        metadata.pop("namespace", None)
+        metadata.pop("annotations", None)
+        return {**document, "metadata": metadata}
+
+    ours = [
+        comparable(d)
+        for d in rendered
+        if isinstance(d, dict) and (d.get("kind"), (d.get("metadata") or {}).get("name"))
+        in STEP_7_OBJECTS
+    ]
+    copies = [comparable(d) for d in yaml.safe_load_all(DELETED_EDGE_COPIES) if d]
+    return field_changes(copies, ours)
+
+
+def test_step_7_adds_the_four_edge_objects_and_changes_nothing_else(
+    working_tree: Path,
+) -> None:
+    """K3, first half: the values move is exactly four added objects."""
+    before = parent_render(working_tree, STEP_7_REVERTED)
     after = parent_render(working_tree)
     changes = field_changes(before, after)
-    print(f"[K3 re-pin] {len(after)} object(s), {len(changes)} changed field(s)")
-    assert changes == EXPECTED_REPIN_CHANGES, sorted(changes ^ EXPECTED_REPIN_CHANGES)
+    print(f"[K3 step 7] {len(before)} -> {len(after)} object(s), {len(changes)} change(s)")
+    assert changes == {(*o, "<object added or removed>") for o in STEP_7_OBJECTS}, sorted(
+        changes
+    )
 
 
-def test_a_value_moved_by_the_repin_reddens_k3(working_tree: Path) -> None:
-    """Red case: a field K3 did not measure changes on the new side, and is named."""
-    before = parent_render_at(working_tree, PREVIOUS_PARENT)
-    after = parent_render(
-        working_tree, ("--set-string", "gateway.nats.url=nats://elsewhere:4222")
+def test_the_four_edge_objects_equal_the_deleted_copies(working_tree: Path) -> None:
+    """K3, second half: 0 differing fields over the four handed-over objects."""
+    differences = edge_differences(parent_render(working_tree))
+    print(f"[K3 step 7] {len(STEP_7_OBJECTS)} object(s) compared, {len(differences)} field(s) differ")
+    assert not differences, sorted(differences)
+
+
+def test_an_unpinned_nodeport_reddens_the_edge_comparison(working_tree: Path) -> None:
+    """Red case: the NodePort pin dropped from values is named, and nothing else."""
+    differences = edge_differences(
+        parent_render(working_tree, ("--set", "platform.gatewayListener.envoyProxy.httpsNodePort=null"))
     )
-    unexpected = field_changes(before, after) - EXPECTED_REPIN_CHANGES
-    assert unexpected, "a moved NATS_URL went unnoticed"
-    assert all(kind == "Deployment" and name == "gateway" for kind, name, _ in unexpected), (
-        unexpected
+    assert {kind for kind, _, _ in differences} == {"EnvoyProxy"}, differences
+    assert any("patch" in field for _, _, field in differences), differences
+
+
+def test_the_hostname_without_the_enrolment_port_reddens(working_tree: Path) -> None:
+    """Red case: `global.hostname` alone moves iam's enrolment URL off `:18443`."""
+    before = parent_render(working_tree, STEP_7_REVERTED)
+    after = parent_render(working_tree, ("--set", "iam.enrolment.gateway="))
+    unexpected = field_changes(before, after) - {
+        (*o, "<object added or removed>") for o in STEP_7_OBJECTS
+    }
+    assert len(unexpected) == 1, unexpected
+    ((kind, name, field),) = unexpected
+    assert (kind, name) == ("Deployment", "iam") and ".env[" in field, unexpected
+
+
+def test_restoring_a_deleted_edge_copy_reddens_the_gate(tmp_path: Path) -> None:
+    """C1's red case for step 7: `tls` survives, so a restored file is sourced."""
+    tree = a_copy_of_the_tree(tmp_path)
+    (tree / "infra" / "tls" / "gatewayclass.yaml").write_text(
+        "apiVersion: gateway.networking.k8s.io/v1\nkind: GatewayClass\n"
+        "metadata:\n  name: eg\n"
     )
-    assert all(".env[" in field for _, _, field in unexpected), unexpected
+    failures, examined = two_owners(tree)
+    assert {failure.tuple for failure in failures} == {
+        ("gateway.networking.k8s.io", "GatewayClass", "eg"),
+    }, render(failures, examined)
+    assert examined == EXPECTED_DEPLOY_TUPLES + 1, render(failures, examined)

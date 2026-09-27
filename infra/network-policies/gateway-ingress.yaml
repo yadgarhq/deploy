@@ -8,9 +8,10 @@
 #
 # COUPLING LOCALITY (ADR-0685). Rule 1's selector is DERIVED from another
 # object's name rather than chosen: `gateway.envoyproxy.io/owning-gateway-name:
-# edge` is derived from `metadata.name` on the `edge` Gateway in
-# infra/tls/gateway.yaml (line 61 as of this commit), and
-# `owning-gateway-namespace: yadgar` from `metadata.namespace` on the next line.
+# edge` is derived from `metadata.name` on the `edge` Gateway, which the parent
+# chart renders from `platform.gatewayListener.gatewayName` (default `edge`) since
+# step 7 retired infra/tls/gateway.yaml, and `owning-gateway-namespace: yadgar`
+# from the release namespace it installs into.
 # Envoy Gateway stamps both onto the data-plane pods it creates. A selector
 # derived from another object's name belongs in the same repository as that
 # object, so that renaming the object and updating the selector are ONE
@@ -22,9 +23,9 @@
 # server, listed by `kubectl get netpol` and printed in full by `kubectl
 # describe` — it looks exactly like a working policy. ADR-0685 records that this
 # estate has no control that refuses such a policy, and leaves it unclosed. The
-# placement makes the rename one diff; infra/tls/gateway.yaml carries the
-# reciprocal cross-reference, so whoever renames the Gateway is told to come
-# here. Neither is a mechanism that refuses the mismatch.
+# placement made the rename one diff while the Gateway lived here. Since step 7
+# the name is a parent-chart value, and step 8 moves this policy into the
+# `gateway` chart beside it. Neither is a mechanism that refuses the mismatch.
 #
 # Verify both selectors match real pods, because a typo here is silent:
 #
@@ -96,6 +97,18 @@ kind: NetworkPolicy
 metadata:
   name: gateway-ingress
   namespace: yadgar
+  # NEVER PRUNED BY THIS APPLICATION, so step 8 of
+  # `plans/retiring-the-deploy-copies.md` hands this policy to the `yadgar`
+  # Application as an adoption rather than a delete-and-recreate. Step 8
+  # deletes this file and sets `gateway.networkPolicy.enabled`, which renders
+  # `gateway-ingress` under the same name. Without this option the prune can
+  # win that race, as it did for `valkey-ingress` at step 3 (deploy#58), and
+  # between the delete and the create no policy selects the gateway pods.
+  #
+  # IT MUST BE LIVE BEFORE THAT MERGE. It lands in step 7's merge, which is
+  # one merge ahead of step 8.
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   podSelector:
     matchLabels: { app: gateway }
