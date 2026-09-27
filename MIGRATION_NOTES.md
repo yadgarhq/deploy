@@ -2249,7 +2249,12 @@ port=18222
 for pod in nats-0 yadgar-nats-0; do
   kubectl --context kind-yadgar -n yadgar port-forward "pod/$pod" "$port:8222" >/dev/null 2>&1 &
   pf=$!
-  until curl -s -o /dev/null "http://127.0.0.1:$port/healthz"; do sleep 0.25; done
+  # BOUNDED: a forward that never comes up must not hang the loop.
+  if ! timeout 30 bash -c "until curl -s -o /dev/null http://127.0.0.1:$port/healthz; do sleep 0.25; done"; then
+    echo "== $pod: port-forward not ready after 30s — STOP, precondition unread"
+    kill "$pf"; wait "$pf" 2>/dev/null
+    port=$((port + 1)); continue
+  fi
   echo "== $pod"
   curl -s "http://127.0.0.1:$port/connz?auth=1" \
     | jq '{num_connections, users: [.connections[].authorized_user]}'
@@ -2261,7 +2266,9 @@ done
 
 kubectl --context kind-yadgar -n yadgar get deploy iam gateway
 
-# 3. The five objects are the only ones still tracked as `nats:`.
+# 3. Among sts/svc/cm/pdb, exactly the five tracked objects still carry a
+#    `nats:` tracking-id (plus the StatefulSet's ControllerRevision, which
+#    this scan does not list and which garbage collection deletes with it).
 kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb -o json \
   | jq -r '.items[] | select((.metadata.annotations["argocd.argoproj.io/tracking-id"] // "") | startswith("nats:")) | "\(.kind)/\(.metadata.name)"'
 # expect exactly: StatefulSet/nats Service/nats Service/nats-headless
@@ -2269,6 +2276,10 @@ kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb -o json \
 ```
 
 If `nats-0` reports ANY connection, stop: a client still dials the old broker.
+If either port-forward prints "not ready after 30s", stop too: the precondition
+was not read. Check `kubectl -n yadgar get pod nats-0 yadgar-nats-0` and that
+no other process holds local ports 18222/18223, then re-run. Do not delete on
+an unread precondition.
 
 ### The delete
 
@@ -2281,6 +2292,12 @@ kubectl --context kind-yadgar -n yadgar delete \
 ### Proof
 
 ```bash
+# The pod can take its whole 60s grace period to go — measured
+# `terminationGracePeriodSeconds: 60`, and the `nats` container's preStop runs
+# `nats-server -sl=ldm=...` (lame-duck mode) inside that period. Wait for it
+# before reading; an immediate read still shows it Terminating.
+kubectl --context kind-yadgar -n yadgar wait --for=delete pod/nats-0 --timeout=120s
+
 kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb,pod \
   | grep -E '(^|/)nats(-0|-config|-headless)?[[:space:]]'   # expect: no output
 ```
@@ -2292,4 +2309,8 @@ since step 6's second merge.
 
 **Rollback:** none is needed for the data, because there is none. To bring the
 old broker back, revert step 6's third merge: Argo then creates five new objects
-under the same names.
+under the same names. **That revert is valid only BEFORE B5.** After B5 the
+parent owns the `nats` names (ADR-0805's `fullnameOverride: nats`), so
+restoring `infra/nats.yaml` gives five objects two owners — the two-owners gate
+reddens on 5 — and two automated Applications prune each other. Do not revert
+step 6's third merge once B5 has landed.

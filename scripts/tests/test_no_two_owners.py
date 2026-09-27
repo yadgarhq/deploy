@@ -22,10 +22,10 @@ Application itself. P is `helm template` of the pinned parent at
 `infra/yadgar/values.yaml`.
 
 `destination.namespace` RATHER THAN `repoURL`, and it is not a convenience. A gate
-keyed on `repoURL` never admits `infra/nats.yaml`, whose chart comes from
-`nats-io.github.io` — and ADR-0786 names that Application as one of the two the
-parent duplicates. Such a gate would be structurally blind to the exact class the
-ruling calls out. Keying on the destination namespace also drops `infra/apps.yaml`
+keyed on `repoURL` never admitted `infra/nats.yaml`, whose chart came from
+`nats-io.github.io` until step 6's third merge deleted it — and ADR-0786 named
+that Application as one of the two the parent duplicated. Such a gate would have
+been structurally blind to the exact class the ruling called out. Keying on the destination namespace also drops `infra/apps.yaml`
 (it installs into `argocd`) and `estate-front-app` (into `estate-front`) with no
 exception written for either.
 
