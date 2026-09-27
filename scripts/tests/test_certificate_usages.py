@@ -72,7 +72,7 @@ def certificates(root: Path) -> list[tuple[str, dict]]:
             if (
                 isinstance(document, dict)
                 and document.get("kind") == "Certificate"
-                and str(document.get("apiVersion", "")).startswith("cert-manager.io/")
+                and str(document.get("apiVersion", "")).split("/")[0] == "cert-manager.io"
             ):
                 found.append((str(path.relative_to(root)), document))
     return found
