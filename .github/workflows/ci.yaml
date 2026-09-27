@@ -125,7 +125,8 @@ jobs:
 
   # THE TWO-OWNERS GATE (`plans/retiring-the-deploy-copies.md`), AND IT IS A NEW
   # JOB RATHER THAN A LINE ADDED TO ONE ABOVE. It needs `helm` and network to
-  # `ghcr.io` and `nats-io.github.io`, and no job in this file had either.
+  # `ghcr.io`, and no job in this file had either. It reached
+  # `nats-io.github.io` too until step 6's third merge deleted `infra/nats.yaml`.
   #
   # NOT A PRE-COMMIT HOOK, for the same reason `signature` is not one: a hook may
   # not depend on a registry. `scripts/policy_sources_named.py` asks an offline

@@ -2178,10 +2178,11 @@ nothing until this step is taken**, for exactly the reason the runner-signature
 section above gives: the `main` ruleset requires one status check, `ci / passed`,
 and this job is not inside that aggregate.
 
-It cannot be a pre-commit hook. It pulls the parent from `ghcr.io` and renders
-`infra/nats.yaml`'s chart from `nats-io.github.io`, and a hook may not depend on
-a registry — the same line `runner_image_pinned.py` draws between its structural
-half and its signature half.
+It cannot be a pre-commit hook. It pulls the parent from `ghcr.io` (and, until
+step 6's third merge deleted `infra/nats.yaml`, rendered that chart from
+`nats-io.github.io`), and a hook may not depend on a registry — the same line
+`runner_image_pinned.py` draws between its structural half and its signature
+half.
 
 **Why it matters more with each step.** The `yadgar` Application now carries
 `prune: true` and `selfHeal: true`. A pull request that flips a `platform.*`
@@ -2194,3 +2195,122 @@ Add `{ "context": "two-owners" }` beside `{ "context": "ci / passed" }` in the
 above spells out in full. The context is the job id, with no `<caller> /` prefix,
 because this job is defined in this file rather than called from a reusable
 workflow.
+
+## B4b — delete the five orphaned `nats` objects (NEEDS-MAX, `plans/the-one-application-install.md`)
+
+**A hand delete on the cluster. Run it after step 6's third merge (which deleted
+`infra/nats.yaml`) has synced, and BEFORE B5.** Nothing here is applied
+automatically.
+
+**Why the objects are still there.** `infra/nats.yaml` was an Argo Application
+that the `infra` app-of-apps tracks. Deleting the file makes `infra` (with
+`automated.prune: true`) prune the `nats` Application OBJECT. That Application
+carries no `resources-finalizer.argocd.argoproj.io` — measured 2026-09-27,
+`.metadata.finalizers` is empty — so pruning it deletes nothing it rendered. Its
+objects stay, running and unowned.
+
+**The orphan list, measured rather than assumed.** On 2026-09-27 every live
+object in the cluster whose `argocd.argoproj.io/tracking-id` begins `nats:` is
+exactly the five objects the Application's `status.resources` lists:
+
+| kind                  | name            |
+| --------------------- | --------------- |
+| `StatefulSet`         | `nats`          |
+| `Service`             | `nats`          |
+| `Service`             | `nats-headless` |
+| `ConfigMap`           | `nats-config`   |
+| `PodDisruptionBudget` | `nats`          |
+
+There is no ServiceAccount, Secret, ServiceMonitor or NetworkPolicy among them.
+`nats-auth` and `nats-auth-gateway` belong to `infra/bootstrap/`, and the
+parent's `yadgar-nats` reads them, so they stay. Kubernetes garbage collection
+deletes the rest through owner references: `pod/nats-0` and its
+`ControllerRevision` with the StatefulSet, and the `Endpoints` and
+`EndpointSlice`s with the two Services. No PersistentVolumeClaim exists — the
+StatefulSet has `volumeClaimTemplates: null` and runs no JetStream — so no data
+is lost.
+
+**Why B5 needs this first.** B5 moves this organisation to a parent that sets
+`fullnameOverride: nats` (ADR-0805). The parent then renders a StatefulSet named
+`nats` with selector `app.kubernetes.io/instance: yadgar`. The orphan's selector
+is `app.kubernetes.io/instance: nats`, and a StatefulSet's selector is
+immutable, so B5's sync cannot apply over the orphan. Delete it first.
+
+### Preconditions — all three must hold
+
+```bash
+# 1. The third merge has synced: the Application is gone.
+kubectl --context kind-yadgar -n argocd get application nats   # expect: NotFound
+
+# 2. Nothing dials the old broker, and every client is on the parent's.
+#    The apiserver proxy cannot reach 8222 (`nats-ingress` admits it only from
+#    namespace `yadgar`), so read /connz through a port-forward.
+port=18222
+for pod in nats-0 yadgar-nats-0; do
+  kubectl --context kind-yadgar -n yadgar port-forward "pod/$pod" "$port:8222" >/dev/null 2>&1 &
+  pf=$!
+  # BOUNDED: a forward that never comes up must not hang the loop.
+  if ! timeout 30 bash -c "until curl -s -o /dev/null http://127.0.0.1:$port/healthz; do sleep 0.25; done"; then
+    echo "== $pod: port-forward not ready after 30s — STOP, precondition unread"
+    kill "$pf"; wait "$pf" 2>/dev/null
+    port=$((port + 1)); continue
+  fi
+  echo "== $pod"
+  curl -s "http://127.0.0.1:$port/connz?auth=1" \
+    | jq '{num_connections, users: [.connections[].authorized_user]}'
+  kill "$pf"; wait "$pf" 2>/dev/null
+  port=$((port + 1))
+done
+# expect: nats-0 num_connections 0
+#         yadgar-nats-0 num_connections = live iam + gateway pods
+
+kubectl --context kind-yadgar -n yadgar get deploy iam gateway
+
+# 3. Among sts/svc/cm/pdb, exactly the five tracked objects still carry a
+#    `nats:` tracking-id (plus the StatefulSet's ControllerRevision, which
+#    this scan does not list and which garbage collection deletes with it).
+kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb -o json \
+  | jq -r '.items[] | select((.metadata.annotations["argocd.argoproj.io/tracking-id"] // "") | startswith("nats:")) | "\(.kind)/\(.metadata.name)"'
+# expect exactly: StatefulSet/nats Service/nats Service/nats-headless
+#                 ConfigMap/nats-config PodDisruptionBudget/nats
+```
+
+If `nats-0` reports ANY connection, stop: a client still dials the old broker.
+If either port-forward prints "not ready after 30s", stop too: the precondition
+was not read. Check `kubectl -n yadgar get pod nats-0 yadgar-nats-0` and that
+no other process holds local ports 18222/18223, then re-run. Do not delete on
+an unread precondition.
+
+### The delete
+
+```bash
+kubectl --context kind-yadgar -n yadgar delete \
+  statefulset/nats service/nats service/nats-headless \
+  configmap/nats-config poddisruptionbudget/nats
+```
+
+### Proof
+
+```bash
+# The pod can take its whole 60s grace period to go — measured
+# `terminationGracePeriodSeconds: 60`, and the `nats` container's preStop runs
+# `nats-server -sl=ldm=...` (lame-duck mode) inside that period. Wait for it
+# before reading; an immediate read still shows it Terminating.
+kubectl --context kind-yadgar -n yadgar wait --for=delete pod/nats-0 --timeout=120s
+
+kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb,pod \
+  | grep -E '(^|/)nats(-0|-config|-headless)?[[:space:]]'   # expect: no output
+```
+
+Then re-run precondition 2 for `yadgar-nats-0` only: `num_connections` is
+unchanged, equal to the live iam + gateway pods. Deleting the orphans touches
+nothing a client reads, because both clients dial `nats://yadgar-nats:4222`
+since step 6's second merge.
+
+**Rollback:** none is needed for the data, because there is none. To bring the
+old broker back, revert step 6's third merge: Argo then creates five new objects
+under the same names. **That revert is valid only BEFORE B5.** After B5 the
+parent owns the `nats` names (ADR-0805's `fullnameOverride: nats`), so
+restoring `infra/nats.yaml` gives five objects two owners — the two-owners gate
+reddens on 5 — and two automated Applications prune each other. Do not revert
+step 6's third merge once B5 has landed.
