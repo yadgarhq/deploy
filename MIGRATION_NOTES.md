@@ -2614,12 +2614,27 @@ merge lands. Keep the window short, and do not recreate the cluster inside it.
 and none of the five names exists in `yadgar`. That merge sets
 `platform.bootstrap.create: true` and keeps `platform.bootstrap.iamKeys.create:
 false`. Its K3 render diff at parent `0.3.7` is five added hook objects and 0
-changed objects, so no pod rolls. Every check below is read-only.
+changed objects, so no pod rolls. Every check below is read-only, except the
+one sync step 0 may ask for.
+
+**THE MERGE MAY NOT SYNC BY ITSELF.** Argo auto-syncs an Application only when
+it is OutOfSync, and hooks do not count toward sync status. This merge changes
+hooks only, so `yadgar` can read Synced at the new commit with no sync
+operation, and no hook runs. Measured 2026-09-27: the render-neutral merges
+#66, `c831b47` and #68 have no entry in `yadgar`'s sync history. Step 0 checks
+for that.
 
 ```bash
-# 1. The sync finished. Expect: Succeeded Synced/Healthy
+# 0. A sync operation ran at the merge commit. Two lines: the revisions Argo
+#    compared, then the revisions of the last sync operation. If the second
+#    line does not carry the merge sha, trigger ONE sync (`argocd app sync
+#    yadgar`, or the UI Sync button), then continue.
 kubectl --context kind-yadgar -n argocd get application yadgar \
-  -o jsonpath='{.status.operationState.phase} {.status.sync.status}/{.status.health.status}{"\n"}'
+  -o jsonpath='{.status.sync.revisions}{"\n"}{.status.operationState.syncResult.revisions}{"\n"}'
+
+# 1. The sync finished. Expect: Succeeded Synced/Healthy and the merge sha.
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{.status.operationState.phase} {.status.sync.status}/{.status.health.status} {.status.operationState.syncResult.revisions}{"\n"}'
 
 # 2. Argo ran the hooks as PreSync. Expect five PreSync lines: Job/bootstrap-secrets
 #    and Job/admin-bootstrap-token Succeeded, and the ServiceAccount, Role and
