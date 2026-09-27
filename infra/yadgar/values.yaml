@@ -46,6 +46,14 @@
 #
 # STILL 70 AS OF STEP 6's THIRD MERGE, byte-identical: that merge deletes
 # `infra/nats.yaml` and does not touch this file.
+#
+# STILL 70 AS OF B5 of `plans/the-one-application-install.md`, measured
+# 2026-09-27 against `yadgar:0.2.42` (digest sha256:5b092b8d…): the bump and
+# this file's two deleted `nats.url` lines remove the five `yadgar-nats*`
+# broker objects, add the same five as `nats*` with every other field equal,
+# and move `NATS_URL` in `Deployment/iam` and `Deployment/gateway` to
+# `nats://nats:4222`. The other 63 objects are byte-identical. Both
+# Deployments roll.
 
 # ── GATEWAY ──────────────────────────────────────────────────────────────────
 # `tls.enabled` is gateway's OWN listener. `gateway.iam.tls.enabled` and its two
@@ -64,11 +72,10 @@ gateway:
   iam: { tls: { enabled: true } } # DIAL to iam
   task: { tls: { enabled: true } } # DIAL to task
   project: { tls: { enabled: true } } # DIAL to project
-  # THE PARENT'S BROKER, AS OF STEP 6's SECOND MERGE. See `platform.nats`
-  # below. B5 of `plans/the-one-application-install.md` DELETES this line in
-  # the merge that bumps the parent past `fullnameOverride: nats` (step 6a),
-  # or this client dials a Service that bump renames away.
-  nats: { url: "nats://yadgar-nats:4222" }
+  # NO `nats.url`, AS OF B5: the module default `nats://nats:4222` names the
+  # parent's broker, which `platform` renders as `nats` from 0.1.15
+  # (`fullnameOverride`, ADR-0805; parent 0.2.42 pins 0.1.17). See
+  # `platform.nats` below.
 
 # ── THE SIX SERVICES ─────────────────────────────────────────────────────────
 # `scrapeFrom.namespace: observability` is where Prometheus runs; each module's
@@ -77,9 +84,7 @@ iam:
   autoscaling: { enabled: true }
   tls: { enabled: true }
   iamDb: { tls: { enabled: true } }
-  # THE PARENT'S BROKER, AS OF STEP 6's SECOND MERGE; B5 deletes this line.
-  # See `gateway.nats` above.
-  nats: { url: "nats://yadgar-nats:4222" }
+  # NO `nats.url`, AS OF B5; see `gateway` above.
   networkPolicy:
     {
       enabled: true,
@@ -251,6 +256,11 @@ platform:
   # `PodDisruptionBudget` `nats`, `Service/nats-headless`,
   # `ConfigMap/nats-config`) rather than deleting them; nothing dials them.
   # B4b in MIGRATION_NOTES.md deletes them by hand before B5.
+  #
+  # B5 RENAMES THIS BROKER TO `nats` BY DELETE-THEN-ADOPT. Parent 0.2.42's
+  # `platform` carries `fullnameOverride: nats`, so the sync prunes the five
+  # `yadgar-nats*` objects and creates the same five as `nats*`, the names
+  # both clients' module default dials.
   nats:
     create: true
 

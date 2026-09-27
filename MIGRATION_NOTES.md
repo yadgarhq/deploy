@@ -2314,3 +2314,165 @@ parent owns the `nats` names (ADR-0805's `fullnameOverride: nats`), so
 restoring `infra/nats.yaml` gives five objects two owners — the two-owners gate
 reddens on 5 — and two automated Applications prune each other. Do not revert
 step 6's third merge once B5 has landed.
+
+## B5 — the parent re-pin is a NATS cutover; restart `iam` after it (`plans/the-one-application-install.md`)
+
+**The merge is the change.** Argo syncs the `yadgar` Application at parent `0.2.42`.
+One hand step follows it EVERY time: an `iam` restart after the sync settles. The
+operator chooses when to merge, because the sync moves both NATS clients to a new
+broker.
+
+**What the sync does, from K3 (render diff, measured 2026-09-27).** 70 objects
+before and after. Argo prunes `StatefulSet`, `Service`, `PodDisruptionBudget`
+`yadgar-nats`, `Service/yadgar-nats-headless` and `ConfigMap/yadgar-nats-config`.
+It creates the same five objects as `nats*`, equal in every field but their
+names. `NATS_URL` in `Deployment/iam` and `Deployment/gateway` moves from
+`nats://yadgar-nats:4222` to `nats://nats:4222`, so both Deployments roll
+(`maxSurge: 1`, `maxUnavailable: 0`, two replicas each). The other 63 objects are
+byte-identical. No module image moves, so no migration runs. No PVC exists, so
+no data moves.
+
+**WHY THE `iam` RESTART IS UNCONDITIONAL.** Two facts combine.
+
+- `iam` v0.8.44, `src/invalidate.rs` `Invalidator::connect`, dials NATS ONCE at
+  boot (async-nats 0.50, `retry_on_initial_connect` off). On failure it logs
+  `cannot reach the broker` and keeps a publisher that publishes NOTHING for the
+  life of the process. Authentication keeps working; D72 invalidation from that
+  pod does not. An ESTABLISHED connection reconnects for ever; only the first
+  dial latches. `gateway` v0.9.52 (`src/invalidate/broker.rs`) redials every 5 s
+  and heals by itself.
+- The sync order, from the review of this PR, which read gitops-engine
+  `e48120133eec` `runTasks` (the engine in Argo CD v3.1.8): inside the one wave,
+  Argo prunes FIRST (foreground, so `yadgar-nats-0` goes into lame-duck mode),
+  then applies by kind with `Deployment` BEFORE `StatefulSet`, with no health
+  wait between them. The new `iam` pods therefore dial `nats://nats:4222` before
+  `nats-0` can be Ready. Measured live 2026-09-27: a new `iam` pod dials 0.7 s
+  after its container starts (`iam-665b9d7d44-zht7d`), and the broker pod took
+  11 s from create to Ready (both probes `initialDelaySeconds: 10`).
+
+So expect every new `iam` pod to latch. `Synced`/`Healthy` does NOT show it,
+because `iam`'s readiness does not depend on NATS.
+
+**THE TWO-APPLICATION RACE.** The `infra` Application owns
+`infra/yadgar-app.yaml`, so it owns the PIN. The `yadgar` Application reads
+`$self/infra/yadgar/values.yaml` from `main` on its OWN refresh timer. After the
+merge, `yadgar` can therefore sync ONCE at `0.2.38` with the url lines already
+deleted. In that sync `iam` and `gateway` roll onto `nats://nats:4222`, which
+`0.2.38` does not render, and `iam` latches. The later `0.2.42` sync does not
+roll `iam` again, because its `Deployment` no longer changes. The restart covers
+this path too, but ONLY if it runs after the FINAL state below. A history entry
+reading `["0.2.38", <merge sha>]` means the race was hit.
+
+**The selector overlap is mostly moot.** Both brokers' pods carry the same
+`app.kubernetes.io/{component,instance,name} = nats/yadgar/nats` labels, so
+`Service/nats` could route to `yadgar-nats-0`. Prune runs first, and a
+terminating pod is not a Ready endpoint, so that window is at most the lame-duck
+tail. The brokers are not clustered; the 30 s credential TTL bounds any stale
+answer.
+
+**THE COMMANDS ARE WRITTEN OUT IN FULL**, with no `K=...; $K` variable. zsh does
+not word-split an unquoted `$K`, so that form runs a command named
+`kubectl --context kind-yadgar` and fails.
+
+### Before the merge
+
+```bash
+# B4b is done: no orphaned `nats` objects. Expect no output.
+kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb -o name | grep -E '/nats(-config|-headless)?$'
+
+# The estate is settled at the old pin. Expect: 0.2.38 Synced/Healthy.
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{.spec.sources[0].targetRevision} {.status.sync.status}/{.status.health.status}{"\n"}'
+
+# The sync history BEFORE. Keep this output; the race check compares against it.
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{range .status.history[*]}{.id} {.deployedAt} {.revisions}{"\n"}{end}'
+
+# Record the cutover. Leave this running in a second terminal through the sync.
+# `.object.` PATHS, because `--output-watch-events` wraps each Pod in a watch
+# event: plain `.metadata.name` prints `<none>` on every line (measured
+# 2026-09-27), and the grep below would then drop them all.
+kubectl --context kind-yadgar -n yadgar get pods -w --output-watch-events \
+  -o 'custom-columns=EVENT:.type,NAME:.object.metadata.name,PHASE:.object.status.phase,READY:.object.status.containerStatuses[*].ready,DELETING:.object.metadata.deletionTimestamp' \
+  | grep --line-buffered -E 'nats|^EVENT|iam-[a-z0-9]+-|gateway-[a-z0-9]+-' \
+  | while IFS= read -r line; do printf '%s %s\n' "$(date -u +%H:%M:%S.%N)" "$line"; done \
+  | tee /tmp/b5-cutover.log
+```
+
+### 1. Wait for the FINAL state — all four must hold
+
+```bash
+# a. Synced at the new pin AND the merge commit, and the last operation Succeeded.
+#    Expect: ["0.2.42","<merge sha>"] Succeeded Synced/Healthy
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{.status.sync.revisions} {.status.operationState.phase} {.status.sync.status}/{.status.health.status}{"\n"}'
+
+# b. Both client rollouts complete.
+kubectl --context kind-yadgar -n yadgar rollout status deploy/iam --timeout=300s
+kubectl --context kind-yadgar -n yadgar rollout status deploy/gateway --timeout=300s
+
+# c. The broker rolled out and Ready.
+kubectl --context kind-yadgar -n yadgar rollout status sts/nats --timeout=300s
+kubectl --context kind-yadgar -n yadgar get pod nats-0
+
+# d. No `yadgar-nats*` object left. Expect no output.
+kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb,pod -o name | grep yadgar-nats
+```
+
+Do not go on until all four hold. A restart before (a) holds can land on
+`0.2.38` and latch again.
+
+### 2. Restart `iam` — ALWAYS
+
+```bash
+kubectl --context kind-yadgar -n yadgar rollout restart deploy/iam
+kubectl --context kind-yadgar -n yadgar rollout status deploy/iam --timeout=300s
+```
+
+Live-reversible. It rolls two pods, and `iam` keeps serving throughout
+(`maxUnavailable: 0`).
+
+### 3. Proof
+
+```bash
+# a. The race check. Expect NO entry reading ["0.2.38","<merge sha>"] after the
+#    ones recorded before the merge. One such entry = the race was hit, and
+#    step 2 covered it.
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{range .status.history[*]}{.id} {.deployedAt} {.revisions}{"\n"}{end}'
+
+# b. Each client pod's LAST broker line. The last line, not the first: a gateway
+#    pod may log `still cannot reach the broker` before it reconnects, and that
+#    is not a failure.
+for p in $(kubectl --context kind-yadgar -n yadgar get pods -o name | grep -E '^pod/(iam|gateway)-[a-z0-9]+-[a-z0-9]+$'); do
+  echo "== $p"
+  kubectl --context kind-yadgar -n yadgar logs "$p" --timestamps \
+    | grep -E 'publishing cache invalidation|consuming cache invalidation|cannot reach the broker|reconnected to the broker|REFUSED' \
+    | tail -1
+done
+# expect, for every iam pod:     publishing cache invalidation ... "url":"nats://nats:4222"
+# expect, for every gateway pod: consuming cache invalidation or reconnected to the broker,
+#                                with nats://nats:4222
+
+# c. The broker's own view: expect num_connections 4, users {gateway: 2, iam: 2}.
+kubectl --context kind-yadgar -n yadgar port-forward pod/nats-0 18222:8222 >/dev/null 2>&1 &
+pf=$!
+timeout 30 bash -c 'until curl -s -o /dev/null http://127.0.0.1:18222/healthz; do sleep 0.25; done' \
+  || echo "port-forward not ready after 30s: connz UNREAD"
+curl -s 'http://127.0.0.1:18222/connz?auth=1' \
+  | jq '{num_connections, users: ([.connections[].authorized_user] | group_by(.) | map({(.[0]): length}) | add)}'
+kill "$pf"; wait "$pf" 2>/dev/null
+
+# d. The gap the plan asks for. From /tmp/b5-cutover.log read the DELETING
+#    timestamp on yadgar-nats-0 and nats-0's first READY=true line. Report
+#    nats-0 Ready minus the yadgar-nats-0 deletion, and each iam pod's
+#    `publishing` line (after the restart) minus nats-0 Ready.
+kubectl --context kind-yadgar -n yadgar get pod nats-0 \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.lastTransitionTime}{"\n"}{end}'
+```
+
+**Rollback:** revert the merge. The revert is the same cutover in reverse:
+Argo prunes `nats*`, creates `yadgar-nats*`, and both clients roll back onto
+`nats://yadgar-nats:4222`. The same order and the same race apply. Wait for the
+final state as in step 1, with `0.2.38`, the revert sha and `sts/yadgar-nats`.
+Then ALWAYS run step 2, and run step 3 against `yadgar-nats-0`.
