@@ -541,3 +541,59 @@ def test_the_toggle_without_the_deletion_reddens(tmp_path: Path) -> None:
         ("", "Service", "valkey"),
         ("networking.k8s.io", "NetworkPolicy", "valkey-ingress"),
     }, render(failures, examined)
+
+
+# ── ZERO OWNERS, THE OTHER HALF OF THE ORDERING ──────────────────────────────
+# C1 refuses TWO owners and is blind to NONE: step 5 with its deletion kept and
+# its flip dropped reads 0 over 21 and passes, while the `yadgar` Application
+# renders none of the 13 objects `internal-tls` owned — the live CA and its
+# leaves would then have no healer at all. So every tuple a retired Application
+# owned is asserted to be in P. Measured 2026-09-27 at the pinned 0.2.38.
+RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
+    "internal-tls": frozenset(
+        {("cert-manager.io", "Issuer", "yadgar-internal-selfsign")}
+        | {("cert-manager.io", "Issuer", "yadgar-internal-ca")}
+        | {("cert-manager.io", "Certificate", "yadgar-internal-ca")}
+        | {
+            ("cert-manager.io", "Certificate", f"{name}-tls")
+            for name in (
+                "iam", "iam-db", "task", "task-db", "project", "project-db",
+                "gateway-client", "iam-client", "task-client", "project-client",
+            )
+        }
+    ),
+}
+
+
+def orphans(tree: Path, overrides: tuple[str, ...] = ()) -> list[tuple[str, tuple[str, str, str]]]:
+    """Every retired tuple the parent render does NOT carry, with its old owner."""
+    parent = parent_side(tree, overrides)
+    return sorted(
+        (owner, candidate)
+        for owner, retired in RETIRED_TUPLES.items()
+        for candidate in retired
+        if candidate not in parent
+    )
+
+
+def test_every_retired_object_has_the_parent_as_its_owner(working_tree: Path) -> None:
+    """No object a retired Application owned is left with NO owner."""
+    examined = sum(len(retired) for retired in RETIRED_TUPLES.values())
+    print(f"[zero-owners gate] {examined} retired tuple(s) examined")
+    assert examined == 13
+    missing = orphans(working_tree)
+    assert not missing, f"{len(missing)} retired object(s) have no owner: {missing}"
+
+
+def test_the_deletion_without_the_toggle_reddens(tmp_path: Path) -> None:
+    """Red case: step 5's deletion kept, its flip dropped. All 13 are orphaned."""
+    missing = orphans(
+        a_copy_of_the_tree(tmp_path),
+        overrides=(
+            "--set",
+            "platform.internalCA.create=false",
+            "--set",
+            "platform.certificates.create=false",
+        ),
+    )
+    assert {candidate for _, candidate in missing} == RETIRED_TUPLES["internal-tls"], missing
