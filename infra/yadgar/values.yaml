@@ -38,6 +38,11 @@
 # `Service`, `PodDisruptionBudget` `yadgar-nats`, `Service/yadgar-nats-headless`,
 # `ConfigMap/yadgar-nats-config` and `NetworkPolicy/nats-ingress` — and changes
 # 0 of the other 64. No Deployment changes, so no existing pod rolls.
+#
+# STILL 70 AS OF STEP 6's SECOND MERGE, measured 2026-09-27 at the same pin and
+# digest. The two `nats.url` lines below change exactly 2 lines of the render —
+# the `NATS_URL` value in `Deployment/iam` and in `Deployment/gateway` — and
+# add or remove no object. Both Deployments roll.
 
 # ── GATEWAY ──────────────────────────────────────────────────────────────────
 # `tls.enabled` is gateway's OWN listener. `gateway.iam.tls.enabled` and its two
@@ -56,6 +61,11 @@ gateway:
   iam: { tls: { enabled: true } } # DIAL to iam
   task: { tls: { enabled: true } } # DIAL to task
   project: { tls: { enabled: true } } # DIAL to project
+  # THE PARENT'S BROKER, AS OF STEP 6's SECOND MERGE. See `platform.nats`
+  # below. B5 of `plans/the-one-application-install.md` DELETES this line in
+  # the merge that bumps the parent past `fullnameOverride: nats` (step 6a),
+  # or this client dials a Service that bump renames away.
+  nats: { url: "nats://yadgar-nats:4222" }
 
 # ── THE SIX SERVICES ─────────────────────────────────────────────────────────
 # `scrapeFrom.namespace: observability` is where Prometheus runs; each module's
@@ -64,6 +74,9 @@ iam:
   autoscaling: { enabled: true }
   tls: { enabled: true }
   iamDb: { tls: { enabled: true } }
+  # THE PARENT'S BROKER, AS OF STEP 6's SECOND MERGE; B5 deletes this line.
+  # See `gateway.nats` above.
+  nats: { url: "nats://yadgar-nats:4222" }
   networkPolicy:
     {
       enabled: true,
@@ -216,10 +229,18 @@ platform:
   # `nats-ingress` is the one object this toggle renders that `deploy` also
   # held; the rendered spec equals that file's spec field for field. The other
   # five objects are named `yadgar-nats*` after this release and collide with
-  # nothing, so `infra/nats.yaml`'s broker keeps running and every client keeps
-  # dialling it (`nats://nats:4222`, the module default) until the second
-  # merge. Both brokers read `nats-auth` and `nats-auth-gateway`, which
-  # `infra/bootstrap/` mints, so this one starts with working accounts.
+  # nothing, so `infra/nats.yaml`'s broker keeps running. Both brokers read
+  # `nats-auth` and `nats-auth-gateway`, which `infra/bootstrap/` mints, so
+  # this one starts with working accounts.
+  #
+  # THE SECOND MERGE MOVED BOTH CLIENTS HERE: `gateway.nats.url` and
+  # `iam.nats.url` above read `nats://yadgar-nats:4222`, where the module
+  # default `nats://nats:4222` dials `deploy`'s broker. The two brokers are not
+  # clustered, so during that merge's roll an `iam` pod and a `gateway` pod can
+  # sit on different brokers and an invalidation crosses nothing; gateway's
+  # credential cache TTL (`YADGAR_CREDENTIAL_TTL_SECONDS`, 30 here) bounds the
+  # stale answer. `infra/nats.yaml` stays until the third merge, so a revert of
+  # the second finds the old broker still serving.
   nats:
     create: true
 

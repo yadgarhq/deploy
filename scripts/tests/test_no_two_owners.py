@@ -59,6 +59,7 @@ counterpart, not its replacement.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -294,7 +295,12 @@ def deploy_side(tree: Path) -> dict[tuple[str, str, str], str]:
 
 
 def parent_side(tree: Path, overrides: tuple[str, ...] = ()) -> set[tuple[str, str, str]]:
-    """Set P: the pinned parent rendered at this organisation's values.
+    """Set P: the pinned parent rendered at this organisation's values."""
+    return tuples_of(parent_render(tree, overrides))
+
+
+def parent_render(tree: Path, overrides: tuple[str, ...] = ()) -> list:
+    """The documents of P, for a check that reads more than the tuples.
 
     THE VERSION IS READ OFF `infra/yadgar-app.yaml` RATHER THAN WRITTEN HERE, so a
     parent bump moves the gate's subject with it and never leaves the gate
@@ -331,7 +337,7 @@ def parent_side(tree: Path, overrides: tuple[str, ...] = ()) -> set[tuple[str, s
             *api_version_flags(),
             *overrides,
         )
-    return tuples_of(yaml.safe_load_all(rendered))
+    return list(yaml.safe_load_all(rendered))
 
 
 def two_owners(tree: Path, overrides: tuple[str, ...] = ()) -> tuple[list[Failure], int]:
@@ -675,3 +681,167 @@ def test_the_nats_deletion_without_the_toggle_reddens(tmp_path: Path) -> None:
     assert {candidate for _, candidate in missing} == RETIRED_TUPLES[
         "network-policies/nats-ingress.yaml"
     ], missing
+
+
+# ── EVERY BROKER URL NAMES A BROKER, FROM STEP 6's SECOND MERGE ──────────────
+# The two-owners gate reads NAMES and is blind to a REFERENCE. Step 6's third
+# merge deletes `infra/nats.yaml`, and a url still reading `nats://nats:4222`
+# would then dial a Service nobody renders — C1 reads 0, C2 reads 15, and both
+# clients have lost their broker. Nothing above can see that, because no object
+# changed owner. So every `nats://<host>` string in P is resolved against the
+# Services P and D render.
+#
+# TWO QUESTIONS, TWO SETS, and the pair of red cases below is what proves each
+# check reads the set it names:
+#
+#   * RESOLVES — the host is a Service in P ∪ D. True at every merge of step 6;
+#     it is what reddens at the third merge if a url line is forgotten.
+#   * ON THE PARENT'S BROKER — the host is a Service in P alone. False before
+#     step 6's second merge (both urls dialled `deploy`'s `nats`), true from it
+#     on. It stays true after step 6a / B5, whose `fullnameOverride: nats` makes
+#     P render `Service/nats` while the urls fall back to the module default.
+#
+# THE FLOOR IS 2: `iam` publishes and `gateway` consumes. A render with fewer
+# urls has dropped a client, and "no url failed" over zero urls is no finding.
+MINIMUM_BROKER_URLS = 2
+
+# A HOST, NOT A URL. `user:password@` and the port are stripped; a url list
+# (`nats://a:4222,nats://b:4222`) yields one match per entry.
+BROKER_URL = re.compile(r"nats://(?:[^@/\s\"',]+@)?([^:/\s\"',]+)")
+
+
+def strings_in(node):
+    """Every string anywhere inside a parsed document."""
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from strings_in(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from strings_in(value)
+
+
+def service_name(host: str) -> str:
+    """The Service a host resolves to in `yadgar`, or the host unchanged.
+
+    `nats` and `nats.yadgar.svc.cluster.local` name the same Service. A dotted
+    host in any OTHER namespace is returned whole, so it matches no Service and
+    is reported rather than silently accepted.
+    """
+    labels = host.split(".")
+    if len(labels) == 1 or labels[1] == TARGET_NAMESPACE:
+        return labels[0]
+    return host
+
+
+def broker_urls(documents) -> list[tuple[str, str]]:
+    """`(Kind/name, host)` for every `nats://` url in a rendered stream."""
+    found = []
+    for document in documents:
+        if not isinstance(document, dict) or not document.get("kind"):
+            continue
+        owner = f"{document['kind']}/{(document.get('metadata') or {}).get('name')}"
+        for text in strings_in(document):
+            found += [(owner, host) for host in BROKER_URL.findall(text)]
+    return found
+
+
+def services(tuples) -> set[str]:
+    """The names of the core `Service` objects in a tuple set."""
+    return {name for group, kind, name in tuples if (group, kind) == ("", "Service")}
+
+
+def unresolved_brokers(
+    tree: Path, overrides: tuple[str, ...] = (), parent_only: bool = False
+) -> tuple[list[tuple[str, str]], int]:
+    """Every url whose host is not a rendered Service, and how many were read."""
+    documents = parent_render(tree, overrides)
+    known = services(tuples_of(documents))
+    if not parent_only:
+        known |= services(deploy_side(tree))
+    urls = broker_urls(documents)
+    failures = [(owner, host) for owner, host in urls if service_name(host) not in known]
+    return failures, len(urls)
+
+
+def test_every_broker_url_names_a_rendered_service(working_tree: Path) -> None:
+    """RESOLVES: every `nats://` host in P is a Service in P ∪ D."""
+    failures, examined = unresolved_brokers(working_tree)
+    print(f"[broker-url gate] {examined} nats:// url(s) examined against P ∪ D")
+    assert examined >= MINIMUM_BROKER_URLS, (
+        f"{examined} nats:// url(s) in the parent render; iam and gateway carry one each"
+    )
+    assert not failures, f"url(s) naming no rendered Service: {failures}"
+
+
+def test_every_client_dials_the_parents_broker(working_tree: Path) -> None:
+    """ON THE PARENT'S BROKER: step 6's second merge moved both clients."""
+    failures, examined = unresolved_brokers(working_tree, parent_only=True)
+    print(f"[broker-url gate] {examined} nats:// url(s) examined against P")
+    assert examined >= MINIMUM_BROKER_URLS
+    assert not failures, (
+        f"url(s) dialling a broker the parent does not render: {failures}. "
+        f"Step 6's third merge deletes `infra/nats.yaml`; these would dial nothing."
+    )
+
+
+def test_a_url_left_on_the_deleted_broker_reddens(tmp_path: Path) -> None:
+    """Red case for RESOLVES: step 6's third merge with one url forgotten.
+
+    ONE url, so the gate is shown to judge each url rather than the render.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    # `missing_ok`, so the case still runs after the third merge deletes it.
+    (tree / "infra" / "nats.yaml").unlink(missing_ok=True)
+    failures, examined = unresolved_brokers(
+        tree, overrides=("--set-string", "iam.nats.url=nats://nats:4222")
+    )
+    assert failures == [("Deployment/iam", "nats")], (failures, examined)
+
+
+# D's `Service/nats`, CONSTRUCTED rather than read off `infra/nats.yaml`, so
+# the pair below means the same thing before and after the third merge deletes
+# that file. A directory source, because that is the cheapest shape D reads, and
+# only what the gate reads, for the reason the valkey constants above give.
+DEPLOY_BROKER_APPLICATION = """
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: deploy-broker
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/deploy-broker
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+"""
+
+DEPLOY_BROKER_SERVICE = """
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+"""
+
+
+def test_a_url_on_deploys_broker_resolves_but_is_not_the_parents(tmp_path: Path) -> None:
+    """The discriminating pair: the same kind of url with D holding `Service/nats`.
+
+    RESOLVES stays green, because D renders `Service/nats`. ON THE PARENT'S
+    BROKER reddens on exactly that url. A RESOLVES check that ignored D would
+    redden here too, and one that ignored P would pass the case above.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    (tree / "infra" / "deploy-broker").mkdir()
+    (tree / "infra" / "deploy-broker" / "service.yaml").write_text(DEPLOY_BROKER_SERVICE)
+    (tree / "infra" / "deploy-broker-app.yaml").write_text(DEPLOY_BROKER_APPLICATION)
+    overrides = ("--set-string", "gateway.nats.url=nats://nats:4222")
+    resolves, _ = unresolved_brokers(tree, overrides)
+    assert resolves == [], resolves
+    on_parent, _ = unresolved_brokers(tree, overrides, parent_only=True)
+    assert on_parent == [("Deployment/gateway", "nats")], on_parent
