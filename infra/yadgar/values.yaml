@@ -26,6 +26,12 @@
 # 3 instances, that plan's M2 gate — and each rendered object carries
 # `helm.sh/resource-policy: keep` and
 # `argocd.argoproj.io/sync-options: Prune=false`, which is M2a at 6 over 3.
+#
+# 64 OBJECTS AS OF STEP 5 of `plans/retiring-the-deploy-copies.md`, measured
+# 2026-09-27 at the same pin and digest. `platform.internalCA.create` and
+# `platform.certificates.create` below add exactly 13 — Certificate and Issuer
+# `yadgar-internal-ca`, Issuer `yadgar-internal-selfsign` and the ten leaf
+# Certificates — and change 0 lines in the other 51.
 
 # ── GATEWAY ──────────────────────────────────────────────────────────────────
 # `tls.enabled` is gateway's OWN listener. `gateway.iam.tls.enabled` and its two
@@ -185,12 +191,20 @@ platform:
   valkey:
     create: true
 
+  # ── THE INTERNAL CA AND ITS TEN LEAVES: THE PARENT'S, AS OF STEP 5 ─────────
+  # `infra/internal-tls-app.yaml` and `infra/internal-tls/` were deleted in the
+  # merge that set these two true. The 13 rendered specs equal the 13 live
+  # specs field for field, measured 2026-09-27 against `kind-yadgar`, so the
+  # handover rewrites the tracking-id and reissues nothing: the CA Secret and
+  # the ten leaf Secrets keep their names, and cert-manager here runs without
+  # `--enable-certificate-owner-ref`, so no Secret is owned by a Certificate.
+  internalCA:
+    create: true
+  certificates:
+    create: true
+
   # ── STILL `deploy`'S ───────────────────────────────────────────────────────
   # Each line names the step that moves it and the copy that has to go first.
-  internalCA:
-    create: false # step 5, with infra/internal-tls/
-  certificates:
-    create: false # step 5, with infra/internal-tls/
   edgeTLS:
     create: false # step 7, with infra/tls/certificate.yaml
   gatewayListener:

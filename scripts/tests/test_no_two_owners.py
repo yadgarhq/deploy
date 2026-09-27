@@ -94,7 +94,16 @@ TARGET_NAMESPACE = "yadgar"
 #
 # SO THE LINE MOVES IN MERGE A'S OWN COMMIT. Deleting the Application without
 # moving it reddens C2 on the merge itself.
-EXPECTED_DEPLOY_TUPLES = 34
+#
+# 21 AFTER STEP 5, which deletes `infra/internal-tls-app.yaml` and its
+# directory in ONE merge. That Application sourced 13 tuples — the internal
+# CA's Certificate, its two Issuers and the ten leaves — and the parent at
+# 0.2.38 with `platform.internalCA.create` and `platform.certificates.create`
+# true renders exactly those 13 and nothing else. Measured 2026-09-27: 34
+# before the merge and 21 after. Restoring the Application AND its directory
+# reads 34 with 13 two-owner failures; restoring either one alone reads 21,
+# because an Application whose path is absent sources nothing.
+EXPECTED_DEPLOY_TUPLES = 21
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
