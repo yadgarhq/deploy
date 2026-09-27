@@ -931,3 +931,105 @@ def test_a_url_on_deploys_broker_resolves_but_is_not_the_parents(tmp_path: Path)
     assert resolves == [], resolves
     on_parent, _ = unresolved_brokers(tree, overrides, parent_only=True)
     assert on_parent == [("Deployment/gateway", "yadgar-nats")], on_parent
+
+
+# ── THE NEXT HANDOVER IS AN ADOPTION, NOT A DELETE-THEN-CREATE ───────────────
+# A same-name object handed from one Argo Application to another needs
+# `argocd.argoproj.io/sync-options: Prune=false` on the SOURCE copy, live one
+# merge ahead of the handover (`plans/the-one-application-install.md`, its
+# standing rule). Argo prunes the losing Application's unprotected copy before
+# the gaining Application adopts it: measured at step 3, where `valkey-ingress`
+# came back with a new uid, and at step 6, where `deploy#64` kept
+# `nats-ingress`'s uid by carrying the annotation first.
+#
+# THE TOGGLES OF THE NEXT HANDOVER, NOT THE CURRENT VALUES FILE. The set of
+# guarded objects is MEASURED, never listed: it is D ∩ P with P rendered at the
+# toggles the next step flips. Step 7 of `plans/retiring-the-deploy-copies.md`
+# flips `platform.edgeTLS.create` and `platform.gatewayListener.create`, with
+# `edgeTLS.issuerRef` naming `yadgar-dev-ca` as a `ClusterIssuer`. Measured
+# 2026-09-27 at the pinned 0.2.42: the render goes from 70 objects to 74, and
+# the 4 added are exactly `infra/tls/`'s `Certificate/gateway-tls`,
+# `EnvoyProxy/edge`, `GatewayClass/eg` and `Gateway/edge`, under the SAME
+# names. No object in `infra/tls/` is rendered by the parent under a different
+# name; the other five (`ClusterIssuer/yadgar-dev-ca` and the four
+# `yadgar-tls-preflight` objects) are not rendered at all and stay `deploy`'s.
+#
+# THE GATEWAY IS WHY THIS STEP CANNOT SKIP THE GUARD. The live envoy Service
+# and Deployment in `envoy-gateway-system` carry an ownerReference to
+# `GatewayClass/eg`, so a prune-then-create of the class garbage-collects the
+# data plane, and a Gateway recreated with a new uid is reprogrammed.
+#
+# WHEN STEP 7 MERGES, these four files leave with it and this reads 0 over the
+# same toggles. The step that merges it moves `NEXT_HANDOVER` to the toggles of
+# the step after (step 8: `gateway.networkPolicy.enabled`) and resets the count.
+NEXT_HANDOVER: tuple[str, ...] = (
+    "--set",
+    "platform.edgeTLS.create=true",
+    "--set",
+    "platform.gatewayListener.create=true",
+    "--set",
+    "platform.edgeTLS.issuerRef.name=yadgar-dev-ca",
+    "--set",
+    "platform.edgeTLS.issuerRef.kind=ClusterIssuer",
+)
+EXPECTED_HANDOVERS = 4
+PRUNE_FALSE = "Prune=false"
+
+
+def unguarded_handovers(
+    tree: Path, overrides: tuple[str, ...] = NEXT_HANDOVER
+) -> tuple[list[tuple[str, tuple[str, str, str]]], int]:
+    """Every D document the parent renders at `overrides` that lacks `Prune=false`.
+
+    READS THE DOCUMENTS, NOT THE TUPLES, because the annotation lives on the
+    source copy. RETURNS the count examined alongside, so an empty answer over
+    zero handovers cannot pass as a guarded one.
+    """
+    parent = parent_side(tree, overrides)
+    missing: list[tuple[str, tuple[str, str, str]]] = []
+    examined = 0
+    for _, application in applications(tree):
+        if (application.get("metadata") or {}).get("name") == PARENT_APPLICATION:
+            continue
+        path = ((application.get("spec") or {}).get("source") or {}).get("path")
+        if not path:
+            continue
+        for manifest in sorted((tree / path).glob("*.yaml")):
+            for document in yaml.safe_load_all(manifest.read_text()):
+                found = tuples_of([document])
+                if not found or not found <= parent:
+                    continue
+                examined += 1
+                annotations = (document.get("metadata") or {}).get("annotations") or {}
+                options = str(annotations.get("argocd.argoproj.io/sync-options", ""))
+                if PRUNE_FALSE not in [option.strip() for option in options.split(",")]:
+                    missing.append((str(manifest.relative_to(tree)), next(iter(found))))
+    return sorted(missing), examined
+
+
+def test_every_object_the_next_step_hands_over_is_never_pruned(working_tree: Path) -> None:
+    """The four `infra/tls/` objects step 7 hands over each carry `Prune=false`."""
+    missing, examined = unguarded_handovers(working_tree)
+    print(f"[handover guard] {examined} object(s) the next step hands over")
+    assert examined == EXPECTED_HANDOVERS, (
+        f"the next step hands over {examined} object(s); the measured count is "
+        f"{EXPECTED_HANDOVERS}"
+    )
+    assert not missing, f"{len(missing)} handover(s) without {PRUNE_FALSE}: {missing}"
+
+
+def test_a_handover_without_the_annotation_reddens(tmp_path: Path) -> None:
+    """Red case: strip the annotation from the Gateway, and it alone is named."""
+    tree = a_copy_of_the_tree(tmp_path)
+    gateway = tree / "infra" / "tls" / "gateway.yaml"
+    documents = list(yaml.safe_load_all(gateway.read_text()))
+    for document in documents:
+        if isinstance(document, dict):
+            (document.get("metadata") or {}).pop("annotations", None)
+    gateway.write_text(yaml.safe_dump_all(documents))
+
+    missing, examined = unguarded_handovers(tree)
+    assert examined == EXPECTED_HANDOVERS
+    assert missing == [
+        ("infra/tls/gateway.yaml", ("gateway.networking.k8s.io", "Gateway", "edge"))
+    ], missing
