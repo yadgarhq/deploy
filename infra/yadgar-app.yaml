@@ -65,26 +65,42 @@ spec:
       chart: yadgar
       # PINNED BY HAND, ONE LINE PER PULL REQUEST, AND NOTHING WRITES IT.
       # Measured 2026-09-27 on the pulled artifact
-      # (digest sha256:5b092b8db408c096f715b0e4d3caad2eed1df6dcef577e588d3e006069a54567):
-      # `0.2.42` pins gateway 0.9.52, iam 0.8.44, iam-db 0.7.46, project 0.1.19,
+      # (digest sha256:a26bf1dff34f7597b8d17957f2241d84c0bff0e61f736a0a30392a13163471be):
+      # `0.3.7` pins gateway 0.9.53, iam 0.8.45, iam-db 0.7.46, project 0.1.19,
       # project-db 0.3.10, task 0.5.30, task-db 0.6.34, config 0.2.0 and
-      # platform 0.1.17. Only the LAST of those moved from `0.2.38`: each of the
-      # other eight vendored subchart directories is byte-identical between the
-      # two pulled artifacts, so no module image digest moves, no module pod
-      # rolls for a new image and no `-db` migration runs. `push_validation` for
-      # the tag's commit `71db3d4` is `success` — that read is the only gate this
-      # pin has, because `ci-release.yaml`'s `release` job carries no `needs:`
-      # on it.
+      # platform 0.1.19. Against `0.2.42` three moved: gateway 0.9.52 → 0.9.53,
+      # iam 0.8.44 → 0.8.45 and platform 0.1.17 → 0.1.19. The three `-db` pins
+      # did not move, so no `-db` image changes and no migration runs.
       #
-      # WHAT `platform` 0.1.14 TO 0.1.17 CARRY: `fullnameOverride: nats` on the
-      # NATS subchart (platform#16, first released in 0.1.15, ADR-0805);
-      # `Prune=false` on the vendored CRDs (#17); the edge issuer defaulting to
-      # the internal CA (#18); a render-time usages test (#19). Only the first
-      # changes this render: the CRDs sit behind `operators.create` and the edge
-      # Certificate behind `edgeTLS.create`, both false in
-      # `infra/yadgar/values.yaml`.
+      # K3 AT THIS BUMP, BEFORE THE MERGE, with `infra/yadgar/values.yaml`
+      # unchanged on both sides and the six `--api-versions` the gate uses
+      # (the same result with the five this cluster serves): 70 objects on both
+      # sides, 68 byte-identical, and exactly two fields changed — the image
+      # digest of `Deployment/gateway` and of `Deployment/iam`. Both module
+      # bumps are chart-only (ADR-0808's `global.hostname` fallbacks, gateway#95
+      # and iam#87), so each image is a rebuild of unchanged source. The parent's
+      # own whole-estate defaults (ADR-0803 B6) change nothing here, because
+      # the values file states every key it relies on.
+      # `test_the_repin_changes_only_what_k3_measured` encodes this.
       #
-      # K3, THE RENDER DIFF THIS BUMP WAS GATED ON, BEFORE THE MERGE. `prune:
+      # SO THIS SYNC ROLLS `gateway` AND `iam` AND NOTHING ELSE (two replicas
+      # each, `maxSurge: 1`, `maxUnavailable: 0`). `NATS_URL` stays
+      # `nats://nats:4222`, and `nats-0` is Ready and not touched by this sync,
+      # so a new `iam` pod's single boot dial finds a broker: the B5 latch
+      # cannot happen here and no `iam` restart is needed.
+      #
+      # WHAT `platform` 0.1.18 AND 0.1.19 CARRY: the `global.hostname`
+      # fallbacks (ADR-0808) and the edge data plane's pod scheduling and
+      # pinned HTTPS nodePort (ADR-0809). Neither changes this render: the edge
+      # objects sit behind `gatewayListener.create` and `edgeTLS.create`, both
+      # false here until step 7.
+      #
+      # THE HISTORY OF EARLIER PINS, KEPT. `0.2.42` moved only `platform` from
+      # `0.2.38`: `fullnameOverride: nats` (platform#16, ADR-0805), `Prune=false`
+      # on the vendored CRDs (#17), the edge issuer's internal-CA default (#18)
+      # and a render-time usages test (#19).
+      #
+      # K3 OF THE `0.2.42` BUMP (B5), BEFORE ITS MERGE. `prune:
       # true` and `selfHeal: true` are live below, so a parent rendering FEWER
       # objects deletes the difference unattended. On helm 4.3.0, `--namespace
       # yadgar` and the six `--api-versions` this chart's `require-api` helpers
@@ -112,8 +128,8 @@ spec:
       # `argocd.argoproj.io/sync-options: Prune=false` and an OMITTABLE
       # `storage.className`. The values file's three `className: standard` lines
       # are meaningless against a parent without them. All three `-db` pins are
-      # unchanged at `0.2.42`, so that property holds here too.
-      targetRevision: 0.2.42
+      # unchanged at `0.3.7`, so that property holds here too.
+      targetRevision: 0.3.7
       helm:
         valueFiles:
           - $self/infra/yadgar/values.yaml
