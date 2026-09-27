@@ -6,9 +6,9 @@
 # NetworkPolicy objects and drops what they do not allow, and ledger 511 measured
 # twelve such drops across six module policies.
 #
-# What authenticates the shared broker, `yadgar-nats`, is the `authorization`
+# What authenticates the shared broker, Service `nats`, is the `authorization`
 # block under `nats.config.merge` in `yadgarhq/platform`'s `chart/values.yaml`
-# (line 423 at platform 0.1.13, the version parent 0.2.38 pins) — server-side,
+# (line 454 at platform 0.1.17, the version parent 0.2.42 pins) — server-side,
 # so it holds on every CNI. It was `infra/nats.yaml`'s until step 6's third
 # merge deleted that file. The policies are the
 # second layer, and they are a live one. The broker's policy and its
