@@ -7,16 +7,17 @@
 # twelve such drops across six module policies.
 #
 # What authenticates the shared broker is still the `authorization` block in
-# infra/nats.yaml — server-side, so it holds on every CNI. These objects are the
-# second layer, and they are a live one. Read
-# infra/network-policies/nats-ingress.yaml for the measurements.
+# infra/nats.yaml — server-side, so it holds on every CNI. The policies are the
+# second layer, and they are a live one. The broker's policy and its
+# measurements now live in `yadgarhq/platform`'s
+# `chart/templates/ingress-policies.yaml`.
 #
 # THIS APPLICATION IS SHRINKING, one policy at a time. It held three; step 3 of
 # `plans/retiring-the-deploy-copies.md` retired `valkey-ingress` to the parent
-# chart's `platform.valkey.create`, step 6 retires `nats-ingress` the same way,
-# and step 8 retires `gateway-ingress` and this file with it. The cache's own
-# Application and manifests went with step 3, which is why nothing here names
-# infra/valkey/ any more.
+# chart's `platform.valkey.create`, step 6's first merge retired `nats-ingress`
+# to `platform.nats.create` the same way, and step 8 retires `gateway-ingress`
+# and this file with it. The cache's own Application and manifests went with
+# step 3, which is why nothing here names infra/valkey/ any more.
 #
 # ITS OWN Application rather than a file beside the workloads it selects, because
 # the policies span workloads — one of which, NATS, is a Helm Application with no

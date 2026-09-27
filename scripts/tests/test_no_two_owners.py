@@ -103,7 +103,18 @@ TARGET_NAMESPACE = "yadgar"
 # before the merge and 21 after. Restoring the Application AND its directory
 # reads 34 with 13 two-owner failures; restoring either one alone reads 21,
 # because an Application whose path is absent sources nothing.
-EXPECTED_DEPLOY_TUPLES = 21
+#
+# 20 AFTER STEP 6's FIRST MERGE, which deletes
+# `infra/network-policies/nats-ingress.yaml` and sets `platform.nats.create`
+# true. The file is a DIRECTORY source of the surviving `network-policies`
+# Application, so this rung falls by the one tuple it held while the
+# Application stays. The toggle renders six objects — `nats-ingress` and five
+# `yadgar-nats*` names — and only the first collides with anything `deploy`
+# holds: `infra/nats.yaml` renders `nats`, `nats-headless` and so on under its
+# own release name. Measured 2026-09-27 at the pinned 0.2.38: 21 before and 20
+# after. Step 6's second merge deletes nothing, so 20 appears twice in the
+# ladder; its third merge deletes `infra/nats.yaml` and moves this to 15.
+EXPECTED_DEPLOY_TUPLES = 20
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
@@ -562,7 +573,21 @@ RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
             )
         }
     ),
+    # STEP 6, FIRST MERGE. The `network-policies` Application SURVIVES this
+    # merge, so the key names the file that left it rather than a retired
+    # Application. Only this one tuple is listed: `infra/nats.yaml`'s five
+    # objects leave at the third merge, and the parent at 0.2.38 renders them
+    # as `yadgar-nats*`, so they are successors under other names rather than
+    # the same tuples, and no entry here could say they are in P.
+    "network-policies/nats-ingress.yaml": frozenset(
+        {("networking.k8s.io", "NetworkPolicy", "nats-ingress")}
+    ),
 }
+
+# THE COUNT THE ZERO-OWNERS TEST ASSERTS, written down so that an entry dropped
+# from the dict above reddens rather than shrinks what is examined. 13 from
+# step 5 and 1 from step 6's first merge.
+EXPECTED_RETIRED_TUPLES = 14
 
 
 def orphans(tree: Path, overrides: tuple[str, ...] = ()) -> list[tuple[str, tuple[str, str, str]]]:
@@ -580,7 +605,7 @@ def test_every_retired_object_has_the_parent_as_its_owner(working_tree: Path) ->
     """No object a retired Application owned is left with NO owner."""
     examined = sum(len(retired) for retired in RETIRED_TUPLES.values())
     print(f"[zero-owners gate] {examined} retired tuple(s) examined")
-    assert examined == 13
+    assert examined == EXPECTED_RETIRED_TUPLES
     missing = orphans(working_tree)
     assert not missing, f"{len(missing)} retired object(s) have no owner: {missing}"
 
@@ -597,3 +622,56 @@ def test_the_deletion_without_the_toggle_reddens(tmp_path: Path) -> None:
         ),
     )
     assert {candidate for _, candidate in missing} == RETIRED_TUPLES["internal-tls"], missing
+
+
+# ── STEP 6, FIRST MERGE: THE TWO RED CASES ───────────────────────────────────
+# Only what the gate reads, for the reason the valkey constants above give.
+RESTORED_NATS_INGRESS = """
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats-ingress
+  namespace: yadgar
+"""
+
+
+def test_restoring_the_nats_policy_reddens_the_gate(tmp_path: Path) -> None:
+    """Register row C4's red case BEFORE step 6a: the toggle kept, the file back.
+
+    EXACTLY ONE TUPLE, and that one number is the claim this merge rests on.
+    `platform.nats.create` renders six objects and five of them are
+    `yadgar-nats*`, which nothing in `deploy` holds — `infra/nats.yaml` is
+    still sourced and renders `nats`, `nats-headless` and so on. A second
+    failure here would mean the two brokers share a name, which is the state
+    step 6a's `fullnameOverride` creates and the reason that bump waits for the
+    third merge.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    (tree / "infra" / "network-policies" / "nats-ingress.yaml").write_text(
+        RESTORED_NATS_INGRESS
+    )
+
+    failures, examined = two_owners(tree)
+    assert {failure.tuple for failure in failures} == {
+        ("networking.k8s.io", "NetworkPolicy", "nats-ingress"),
+    }, render(failures, examined)
+    assert all(
+        "network-policies" in failure.deploy_owner for failure in failures
+    ), render(failures, examined)
+    assert examined == EXPECTED_DEPLOY_TUPLES + 1, render(failures, examined)
+
+
+def test_the_nats_deletion_without_the_toggle_reddens(tmp_path: Path) -> None:
+    """Red case: this merge's deletion kept, its flip dropped.
+
+    Exactly `nats-ingress` goes unowned, and nothing from step 5, so the case
+    isolates this merge. With no owner the broker's pods would have NO ingress
+    policy at all — every source admitted on 4222, 8222 and 6222.
+    """
+    missing = orphans(
+        a_copy_of_the_tree(tmp_path),
+        overrides=("--set", "platform.nats.create=false"),
+    )
+    assert {candidate for _, candidate in missing} == RETIRED_TUPLES[
+        "network-policies/nats-ingress.yaml"
+    ], missing
