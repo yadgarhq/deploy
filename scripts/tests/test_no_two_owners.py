@@ -1067,8 +1067,10 @@ def test_a_handover_without_the_annotation_reddens(tmp_path: Path) -> None:
 # includes `global.hostname`, and only because `iam.enrolment.gateway` is
 # stated: with the hostname set and that key empty, iam derives its enrolment
 # URL with NO port and `ENROLMENT_GATEWAY` loses `:18443` — the red case below.
-# Measured 2026-09-27 at the pinned 0.3.7: 70 objects reverted, 74 now, 70
-# identical. (The re-pin to
+# The reverted side unsets all four of step 7's value moves, the enrolment URL
+# included, so it is the real pre-step values: the chart's no-hostname fallback
+# then renders `:18443`, the value live `iam` carries. Measured 2026-09-27 at
+# the pinned 0.3.7: 70 objects reverted, 74 now, 70 identical, 4 added. (The re-pin to
 # 0.3.7 was the previous merge, gated on its own K3: two image digests.)
 #
 # SECOND, THE FOUR RENDERED OBJECTS EQUAL THE DELETED COPIES FIELD FOR FIELD,
@@ -1085,6 +1087,8 @@ STEP_7_REVERTED: tuple[str, ...] = (
     "platform.gatewayListener.create=false",
     "--set",
     "global.hostname=",
+    "--set",
+    "iam.enrolment.gateway=",
 )
 STEP_7_OBJECTS = frozenset(
     {
