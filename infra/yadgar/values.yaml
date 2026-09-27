@@ -32,6 +32,12 @@
 # `platform.certificates.create` below add exactly 13 — Certificate and Issuer
 # `yadgar-internal-ca`, Issuer `yadgar-internal-selfsign` and the ten leaf
 # Certificates — and change 0 lines in the other 51.
+#
+# 70 OBJECTS AS OF STEP 6's FIRST MERGE, measured 2026-09-27 at the same pin
+# and digest. `platform.nats.create` below adds exactly 6 — `StatefulSet`,
+# `Service`, `PodDisruptionBudget` `yadgar-nats`, `Service/yadgar-nats-headless`,
+# `ConfigMap/yadgar-nats-config` and `NetworkPolicy/nats-ingress` — and changes
+# 0 of the other 64. No Deployment changes, so no existing pod rolls.
 
 # ── GATEWAY ──────────────────────────────────────────────────────────────────
 # `tls.enabled` is gateway's OWN listener. `gateway.iam.tls.enabled` and its two
@@ -203,14 +209,26 @@ platform:
   certificates:
     create: true
 
+  # ── A SECOND BROKER, BESIDE `deploy`'S, AS OF STEP 6's FIRST MERGE ─────────
+  # Step 6 runs as THREE merges: stand this broker up, move the clients to it,
+  # then delete `infra/nats.yaml`. This is the first. The copy deleted in the
+  # same merge is `infra/network-policies/nats-ingress.yaml`, because
+  # `nats-ingress` is the one object this toggle renders that `deploy` also
+  # held; the rendered spec equals that file's spec field for field. The other
+  # five objects are named `yadgar-nats*` after this release and collide with
+  # nothing, so `infra/nats.yaml`'s broker keeps running and every client keeps
+  # dialling it (`nats://nats:4222`, the module default) until the second
+  # merge. Both brokers read `nats-auth` and `nats-auth-gateway`, which
+  # `infra/bootstrap/` mints, so this one starts with working accounts.
+  nats:
+    create: true
+
   # ── STILL `deploy`'S ───────────────────────────────────────────────────────
   # Each line names the step that moves it and the copy that has to go first.
   edgeTLS:
     create: false # step 7, with infra/tls/certificate.yaml
   gatewayListener:
     create: false # step 7, with infra/tls/{gateway,gatewayclass,envoyproxy}.yaml
-  nats:
-    create: false # step 6, with infra/nats.yaml
   bootstrap:
     create: false # step 9, with infra/bootstrap/
     iamKeys:
