@@ -146,6 +146,43 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true]
+    # RETRY BOUNDS THE GAP #73's OWN RISK SECTION FLAGGED AND LEFT OPEN. Since
+    # that merge (ce6eb3f), `platform.bootstrap.create: true` puts
+    # `Job/bootstrap-secrets` and `Job/admin-bootstrap-token` on `PreSync` for
+    # every render-changing sync of this Application. A transient hook
+    # failure — an image pull, a flaky call inside the Job's script — is a
+    # FAILED sync operation, and Argo CD 3.1.8's `autoSync` (func at
+    # `controller/appcontroller.go` line 2084) gives an automated operation a
+    # default `Retry: appv1.RetryStrategy{Limit: 5}` (line 2148) UNLESS
+    # `spec.syncPolicy.retry` overrides it (lines 2151-2153). Without this
+    # block that default 5-attempt budget was all this Application had.
+    #
+    # ONCE A BUDGET IS SPENT, the next reconcile sees the operation already
+    # attempted and unsuccessful and logs `Skipping auto-sync: failed
+    # previous sync attempt to %s` (line 2160) — the Application PINS on that
+    # revision. Neither selfHeal nor the next reconcile retries it: only a
+    # new commit or a manual sync starts a fresh operation, and the CLI's own
+    # `argocd app sync --retry-limit` defaults to 0
+    # (`cmd/argocd/commands/app.go` line 2341), taking effect only when
+    # passed `> 0` (line 2275) — so a manual sync does not retry either
+    # unless asked to.
+    #
+    # 10 ATTEMPTS, NOT 5 AND NOT UNLIMITED. `limit: -1` is refused on
+    # purpose: a retrying operation pins the revision it started on and Argo
+    # starts no second operation while one is in flight, so unlimited retry
+    # would leave a broken `yadgar` unable to pick up the very commit that
+    # fixes it — the same reasoning `infra/tls-app.yaml`'s `retry` block
+    # states for its own bound (there: 60 attempts, for a fix that waits on a
+    # human fetching a CA out of 1Password). The bootstrap hooks touch no
+    # such external step, so 10 attempts doubling from 10s to a 5m cap — low
+    # minutes total — is sized to a transient pull or API blip, not to a
+    # human wait.
+    retry:
+      limit: 10
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m
 
   # MOVED VERBATIM FROM `infra/databases-app.yaml`, WHICH MERGE A DELETED.
   #
