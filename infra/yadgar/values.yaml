@@ -350,12 +350,30 @@ platform:
 
   # ── STILL `deploy`'S ───────────────────────────────────────────────────────
   # Each line names the step that moves it and the copy that has to go first.
-  # Step 9 runs as TWO merges with hand step A5b between (ADR-0810). The
-  # first deleted `infra/bootstrap/`; the second turns `create` on.
+  # ── THE BOOTSTRAP SECRETS, THE PARENT'S SINCE STEP 9 (ADR-0810) ────────────
+  # Step 9 ran as TWO merges with hand step A5b between. The first deleted
+  # `infra/bootstrap/`; A5b deleted its five orphaned Job/RBAC objects; this
+  # second merge turns `create` on. The parent's two hook Jobs
+  # (`pre-install,pre-upgrade`, which Argo runs as `PreSync`) mint
+  # `valkey-password`, `nats-auth`, `nats-auth-gateway` and
+  # `admin-bootstrap-token`. They are create-only: an existing Secret answers
+  # 409 and is left untouched, so they re-run on every sync and change nothing.
+  #
+  # `iamKeys.create` IS FALSE ON PURPOSE, AND IT IS STATED, NOT LEFT TO THE
+  # DEFAULT. The parent defaults it TRUE, safe only where iam refuses a wrong
+  # key (ADR-0753). Live iam logs its key identity UNVERIFIED on this cluster
+  # (ledger 1155), so that refusal is not armed here: a minted `iam-keys` after
+  # a rebuild could leave iam Ready against rows under another key. `iam-keys`
+  # stays in 1Password, applied by `make secrets`. Delete this line and the
+  # parent default mints it; `scripts/tests/test_no_two_owners.py` refuses
+  # that by name. Flip it only after iam logs VERIFIED here AND a separate
+  # ruling settles how the chart mint and the 1Password path coexist.
   bootstrap:
-    create: false # step 9's second merge, after A5b
+    create: true
+    adminToken:
+      secretName: admin-bootstrap-token # = gateway.adminBootstrap.tokenSecret
     iamKeys:
-      create: false # step 9, and the Secret it mints is unrecoverable
+      create: false # ADR-0810, ledger 1155
 
   # THE OPERATORS RELEASE IS NOT THIS ORGANISATION'S PATH (ADR-0787). `infra/`
   # installs cert-manager, KEDA, mariadb-operator, Envoy Gateway and Argo CD as
