@@ -1267,6 +1267,25 @@ def minted(documents: list) -> dict[str, list[str]]:
     return result
 
 
+def scripts_of(documents: list) -> dict[str, str]:
+    """Each Job's full rendered script text, by Job name.
+
+    Unlike `minted()`, this keeps the whole script rather than only its
+    `create ... <<JSON` lines, so a literal-text check can catch `iam-keys`
+    appearing anywhere in the script, not only as something it mints.
+    """
+    result: dict[str, str] = {}
+    for document in documents:
+        if not isinstance(document, dict) or document.get("kind") != "Job":
+            continue
+        for container in document["spec"]["template"]["spec"]["containers"]:
+            script = "\n".join(container.get("command") or []) + "\n" + "\n".join(
+                container.get("args") or []
+            )
+            result[document["metadata"]["name"]] = result.get(document["metadata"]["name"], "") + script
+    return result
+
+
 def iam_keys_violations(tree: Path, overrides: tuple[str, ...] = ()) -> list[str]:
     """Why this tree would mint `iam-keys`, or nothing. Each reason names the key."""
     values = yaml.safe_load((tree / "infra" / "yadgar" / "values.yaml").read_text())
@@ -1324,6 +1343,15 @@ def test_the_hooks_mint_every_bootstrap_secret_but_iam_keys(working_tree: Path) 
     print(f"[step 9] minted: {found}")
     assert {job: tuple(names) for job, names in found.items()} == EXPECTED_MINTED, found
     assert not iam_keys_violations(working_tree), iam_keys_violations(working_tree)
+
+
+def test_iam_keys_never_appears_literally_in_either_hook_script(working_tree: Path) -> None:
+    """Stronger than `MINT_LINE` above: `iam-keys` must not appear anywhere in
+    either hook Job's script, not only outside a `create ... <<JSON` line.
+    """
+    scripts = scripts_of(parent_render(working_tree))
+    hit = {job: text for job, text in scripts.items() if job in EXPECTED_MINTED and NEVER_MINTED in text}
+    assert not hit, sorted(hit)
 
 
 def test_iam_keys_create_true_mints_iam_keys(working_tree: Path) -> None:
