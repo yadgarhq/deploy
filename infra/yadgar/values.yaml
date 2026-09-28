@@ -282,8 +282,8 @@ platform:
   # held; the rendered spec equals that file's spec field for field. The other
   # five objects are named `yadgar-nats*` after this release and collide with
   # nothing, so `infra/nats.yaml`'s broker keeps running. Both brokers read
-  # `nats-auth` and `nats-auth-gateway`, which `infra/bootstrap/` mints, so
-  # this one starts with working accounts.
+  # `nats-auth` and `nats-auth-gateway`, which the chart's `bootstrap` hooks
+  # mint (step 9, ADR-0810), so this one starts with working accounts.
   #
   # THE SECOND MERGE MOVED BOTH CLIENTS HERE: `gateway.nats.url` and
   # `iam.nats.url` above read `nats://yadgar-nats:4222`, where the module
@@ -350,8 +350,10 @@ platform:
 
   # ── STILL `deploy`'S ───────────────────────────────────────────────────────
   # Each line names the step that moves it and the copy that has to go first.
+  # Step 9 runs as TWO merges with hand step A5b between (ADR-0810). The
+  # first deleted `infra/bootstrap/`; the second turns `create` on.
   bootstrap:
-    create: false # step 9, with infra/bootstrap/
+    create: false # step 9's second merge, after A5b
     iamKeys:
       create: false # step 9, and the Secret it mints is unrecoverable
 

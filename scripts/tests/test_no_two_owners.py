@@ -142,7 +142,15 @@ TARGET_NAMESPACE = "yadgar"
 # directory — `gateway-ingress.yaml` was the one file left in it — and sets
 # `gateway.networkPolicy.enabled` true. The Application sourced exactly one
 # tuple. Measured 2026-09-27 at the pinned 0.3.7: 11 before and 10 after.
-EXPECTED_DEPLOY_TUPLES = 10
+#
+# 5 AFTER STEP 9's FIRST MERGE (A5 of `plans/the-one-application-install.md`,
+# ADR-0810), which deletes `infra/bootstrap-app.yaml` and `infra/bootstrap/`.
+# That Application sourced five tuples: `Job/bootstrap-secrets`,
+# `Job/admin-bootstrap-token`, and `ServiceAccount`, `Role` and `RoleBinding`
+# `bootstrap-secrets`. The 5 left are `tls`'s four `yadgar-tls-preflight`
+# objects and `ClusterIssuer/yadgar-dev-ca`, which is register row C4's end
+# state. Measured 2026-09-27 at the pinned 0.3.7: 10 before and 5 after.
+EXPECTED_DEPLOY_TUPLES = 5
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
 # `fail` when `database.create` is true and `k8s.mariadb.com/v1alpha1` is absent,
@@ -680,6 +688,14 @@ RETIRED_TUPLES: dict[str, frozenset[tuple[str, str, str]]] = {
     "network-policies": frozenset(
         {("networking.k8s.io", "NetworkPolicy", "gateway-ingress")}
     ),
+    # STEP 9 (A5) HAS NO ENTRY HERE, AND THAT IS NOT AN OMISSION. This dict
+    # holds TRACKED objects the parent now owns. The parent renders the five
+    # `infra/bootstrap/` names only as helm HOOKS (`pre-install,pre-upgrade`,
+    # `before-hook-creation`), which Argo runs as `PreSync` and never tracks,
+    # and `tuples_of` does not tell a hook from a tracked object. An entry here
+    # would therefore pass at A5's second merge while calling the five
+    # "owned" in the sense every other entry means. They are counted on their
+    # own, below, as `BOOTSTRAP_HOOK_NAMES`.
 }
 
 # THE COUNT THE ZERO-OWNERS TEST ASSERTS, written down so that an entry dropped
@@ -1011,32 +1027,30 @@ def test_a_url_on_deploys_broker_resolves_but_is_not_the_parents(tmp_path: Path)
 # by `deploy#68`, and step 8's `gateway-ingress` by `deploy#70`; each left with
 # its step's merge.
 #
-# STEP 9 of `plans/retiring-the-deploy-copies.md` is next: `bootstrap`, behind
-# `platform.bootstrap.create` and `platform.bootstrap.iamKeys.create`. Measured
-# 2026-09-27 at the pinned 0.3.7, the parent renders ALL FIVE of
-# `infra/bootstrap/`'s names — `Job/bootstrap-secrets`,
-# `Job/admin-bootstrap-token`, and `ServiceAccount`, `Role` and `RoleBinding`
-# `bootstrap-secrets` — and renders every one of them as a HELM HOOK
-# (`helm.sh/hook: pre-install,pre-upgrade`, which Argo runs as `PreSync`).
+# STEP 9 WAS THE LAST HANDOVER THIS LADDER HAS, so there is no next one. Its
+# first merge (A5, ADR-0810) deleted `infra/bootstrap/`, the last `deploy`
+# source in namespace `yadgar` the parent also renders. What `deploy` still
+# holds there is `tls`'s preflight and `ClusterIssuer/yadgar-dev-ca`, which no
+# parent toggle renders (register row C4). So `NEXT_HANDOVER` is EMPTY: the
+# guard renders P at this organisation's own values, and both sets it counts
+# are empty. The red cases below keep each branch of the guard exercised,
+# because an empty expectation over an empty examination proves nothing.
 #
-# A HOOK IS NOT ADOPTED, SO `Prune=false` DOES NOT MAKE STEP 9 AN ADOPTION.
-# Argo does not track a hook as a resource of the Application: it creates it
-# on each sync under the hook's delete policy. So the tracked handover set is
-# EMPTY, and the five same-name hook objects are counted separately, by name,
-# as the question step 9 (A5, NEEDS-MAX) has to answer on its own terms — not
-# one this guard can settle with an annotation. No `Prune=false` pre-merge for
-# step 9 rides in step 8's merge: `plans/the-one-application-install.md` asks
-# for one at A3 and A4 only, and on these files it would not be annotation-only
-# (both Jobs carry `Replace=true,Force=true`, so a `bootstrap` resync deletes
-# and re-runs them).
-NEXT_HANDOVER: tuple[str, ...] = (
-    "--set",
-    "platform.bootstrap.create=true",
-    "--set",
-    "platform.bootstrap.iamKeys.create=true",
-)
+# STEP 9's FIVE NAMES WERE HOOKS, NOT HANDOVERS. Measured 2026-09-27 at the
+# pinned 0.3.7, the parent renders `Job/bootstrap-secrets`,
+# `Job/admin-bootstrap-token`, and `ServiceAccount`, `Role` and `RoleBinding`
+# `bootstrap-secrets` as helm hooks (`pre-install,pre-upgrade`, which Argo runs
+# as `PreSync`). Argo does not track a hook, so `Prune=false` could not make
+# step 9 an adoption. ADR-0810 rules the handover instead: this merge orphans
+# the five live objects (the Application has no finalizer), hand step A5b in
+# MIGRATION_NOTES.md deletes them, and step 9's second merge turns
+# `platform.bootstrap.create` on so the hooks recreate them.
+NEXT_HANDOVER: tuple[str, ...] = ()
 EXPECTED_HANDOVERS = 0
-EXPECTED_HOOK_HANDOVERS = frozenset(
+EXPECTED_HOOK_HANDOVERS: frozenset[tuple[str, str, str]] = frozenset()
+
+# THE FIVE NAMES STEP 9 RETIRES FROM `deploy`, as `(apiGroup, kind, name)`.
+BOOTSTRAP_HOOK_NAMES = frozenset(
     {
         ("batch", "Job", "bootstrap-secrets"),
         ("batch", "Job", "admin-bootstrap-token"),
@@ -1102,7 +1116,7 @@ def test_every_object_the_next_step_hands_over_is_never_pruned(working_tree: Pat
 
 
 def test_the_next_step_hands_over_its_hooks_by_name(working_tree: Path) -> None:
-    """Step 9's five `infra/bootstrap/` names render as hooks, named, not counted away."""
+    """The next step's hook-rendered names, named, not counted away. None after step 9."""
     _, _, hooked = unguarded_handovers(working_tree)
     print(f"[handover guard] {len(hooked)} object(s) the parent renders only as hooks")
     assert hooked == EXPECTED_HOOK_HANDOVERS, sorted(hooked ^ EXPECTED_HOOK_HANDOVERS)
@@ -1129,6 +1143,122 @@ def test_a_tracked_handover_without_the_annotation_reddens(tmp_path: Path) -> No
             ("networking.k8s.io", "NetworkPolicy", "gateway-ingress"),
         )
     ], missing
+
+
+# ── STEP 9: THE RETIRED `bootstrap` APPLICATION, FOR THE RED CASES ───────────
+# Only what the gate reads, for the reason the valkey constants above give.
+RESTORED_BOOTSTRAP_APPLICATION = """
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: bootstrap
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yadgarhq/deploy
+    targetRevision: main
+    path: infra/bootstrap
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: yadgar
+"""
+
+RESTORED_BOOTSTRAP_JOB = """
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bootstrap-secrets
+"""
+
+RESTORED_BOOTSTRAP_RBAC = """
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bootstrap-secrets
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: bootstrap-secrets
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bootstrap-secrets
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: admin-bootstrap-token
+"""
+
+
+def restore_bootstrap(tree: Path, whole: bool = True) -> None:
+    """The retired `bootstrap` Application and its directory, or one Job of it."""
+    (tree / "infra" / "bootstrap").mkdir()
+    (tree / "infra" / "bootstrap" / "secrets.yaml").write_text(RESTORED_BOOTSTRAP_JOB)
+    if whole:
+        (tree / "infra" / "bootstrap" / "rbac.yaml").write_text(RESTORED_BOOTSTRAP_RBAC)
+    (tree / "infra" / "bootstrap-app.yaml").write_text(RESTORED_BOOTSTRAP_APPLICATION)
+
+
+def bootstrap_owners(
+    tree: Path, overrides: tuple[str, ...] = ()
+) -> tuple[set[tuple[str, str, str]], set[tuple[str, str, str]]]:
+    """Which of step 9's five names D sources, and which P renders."""
+    return (
+        set(deploy_side(tree)) & BOOTSTRAP_HOOK_NAMES,
+        parent_side(tree, overrides) & BOOTSTRAP_HOOK_NAMES,
+    )
+
+
+def test_the_bootstrap_names_have_no_owner_between_the_two_merges(
+    working_tree: Path,
+) -> None:
+    """Step 9's first merge: the five names are in neither D nor P, ON PURPOSE.
+
+    ADR-0810 hands `bootstrap` over in two merges with a hand step between.
+    This merge removes `deploy`'s Application, so its five live objects are
+    orphaned; A5b deletes them by hand; the second merge turns
+    `platform.bootstrap.create` on and the parent's hooks recreate them. Between
+    the two merges ZERO owners is the ruled state, not a gap C1's zero-owners
+    half should catch. The second merge replaces this test with one asserting
+    the parent renders all five as hooks.
+    """
+    in_deploy, in_parent = bootstrap_owners(working_tree)
+    print(f"[step 9] {len(in_deploy)} of 5 bootstrap name(s) in D, {len(in_parent)} in P")
+    assert not in_deploy, sorted(in_deploy)
+    assert not in_parent, sorted(in_parent)
+
+
+def test_restoring_the_bootstrap_application_reddens_the_rung(tmp_path: Path) -> None:
+    """C2's red case for step 9: the Application and its directory put back.
+
+    `len(D)` rises by exactly the five names, so C2 fails before C1 is read.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    restore_bootstrap(tree)
+    in_deploy, _ = bootstrap_owners(tree)
+    _, examined = two_owners(tree)
+    assert in_deploy == BOOTSTRAP_HOOK_NAMES, sorted(in_deploy ^ BOOTSTRAP_HOOK_NAMES)
+    assert examined == EXPECTED_DEPLOY_TUPLES + len(BOOTSTRAP_HOOK_NAMES), examined
+
+
+def test_a_hook_rendered_copy_is_named_by_the_guard(tmp_path: Path) -> None:
+    """Red case for the guard's HOOK branch, which `NEXT_HANDOVER = ()` leaves idle.
+
+    One Job file restored under its Application, with the parent rendering the
+    bootstrap hooks: the guard names that Job as hook-rendered and counts it as
+    no tracked handover.
+    """
+    tree = a_copy_of_the_tree(tmp_path)
+    restore_bootstrap(tree, whole=False)
+    missing, examined, hooked = unguarded_handovers(
+        tree, ("--set", "platform.bootstrap.create=true")
+    )
+    assert hooked == {("batch", "Job", "bootstrap-secrets")}, sorted(hooked)
+    assert (missing, examined) == ([], EXPECTED_HANDOVERS), (missing, examined)
 
 
 # ── K3 OF STEP 7, ENCODED ────────────────────────────────────────────────────

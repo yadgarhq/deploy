@@ -50,8 +50,9 @@
 # resources WITHIN this Application, which is a separate scale from the wave a
 # parent Application carries.
 #
-# `Replace=true,Force=true`, the same reason `bootstrap-secrets` (D80 Job)
-# carries it: a Job's `spec.template` and `selector` are immutable, so editing
+# `Replace=true,Force=true`, the same reason the chart's `bootstrap-secrets`
+# hook Job carries it (step 9, ADR-0810): a Job's `spec.template` and
+# `selector` are immutable, so editing
 # the script below would otherwise fail an ordinary apply. Re-running this Job
 # on every sync is safe by construction — it performs one read and mutates
 # nothing, so a resync loop here is, at worst, cosmetic.
@@ -147,9 +148,9 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: preflight
-          # Same pinned image as bootstrap-secrets: already present in the
-          # cluster by the time this Job schedules, and a single GET needs
-          # nothing kubectl would add beyond a larger image.
+          # Same pinned image as the chart's `bootstrap-secrets` hook Job:
+          # already present in the cluster by the time this Job schedules, and
+          # a single GET needs nothing kubectl would add beyond a larger image.
           image: curlimages/curl:8.16.0
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c"]
