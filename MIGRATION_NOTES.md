@@ -2564,6 +2564,13 @@ done
 
 If any line differs, stop. Do not delete on an unread or changed precondition.
 
+**Nothing-to-delete branch.** If precondition 1 shows `bootstrap` NotFound AND
+precondition 2's loop prints no line at all — zero of `job/bootstrap-secrets`,
+`job/admin-bootstrap-token`, `serviceaccount/bootstrap-secrets`,
+`role/bootstrap-secrets`, `rolebinding/bootstrap-secrets` exist in `yadgar` —
+there is nothing left to delete. Skip "The delete" below and run "Proof"
+directly.
+
 ### The delete
 
 ```bash
@@ -2582,6 +2589,10 @@ kubectl --context kind-yadgar -n yadgar get jobs,serviceaccounts,roles,rolebindi
 # b. The five Secrets are untouched: run the baseline loop again.
 #    Expect every row equal to the table above: uid, resourceVersion and hash.
 ```
+
+Job Pods are garbage-collected in the background, not synchronously with the
+Job delete. If step (a) still prints a Pod line, wait a few seconds and re-run
+it before treating that line as a failure.
 
 **Then, and only then, merge the second PR of step 9.** Its PR body carries the
 post-sync checks.
