@@ -2994,10 +2994,10 @@ kubectl --context kind-yadgar get crd -o json \
   | jq -r '[.items[]|.metadata.name+"="+.metadata.uid]|sort|join("\n")' | sha256sum | cut -c1-16
 ```
 
-Measured 2026-10-01, read-only, immediately before this merge. All five
-carried `Prune=false`, no finalizer, and an
-`infra:argoproj.io/Application:argocd/<name>` tracking-id. `infra` read
-`Synced`/`Healthy` at `05b160bf2dbd6a036c7e1cf0390ab72b8283f6e5`. K4 read 13.
+Measured 2026-10-01, read-only, immediately before this merge (after `#78`
+had already landed `f7c3f6e`). All five carried `Prune=false`, no finalizer,
+and an `infra:argoproj.io/Application:argocd/<name>` tracking-id. `infra` read
+`Synced`/`Healthy` at `f7c3f6e416f57dc87287d0f3775e7f0a2873154f`. K4 read 13.
 K6 read 52 CRDs, sorted name=uid hash `a8026323ea9d31c2`.
 
 | Application           | uid                                    |
