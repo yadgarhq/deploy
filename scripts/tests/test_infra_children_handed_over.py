@@ -32,6 +32,7 @@ because `infra` and its hand delete are a `deploy`-only concept.
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -62,8 +63,22 @@ def applications(tree: Path):
 
     NOT `rglob`. `infra/<name>/` holds the manifests an Application SOURCES,
     and reading one of those as an Application would double-count it.
+
+    THREE EXTENSIONS, NOT ONE. Argo CD's own directory-source matcher is
+    `^.*\\.(yaml|yml|json|jsonnet)$` (`reposerver/repository/repository.go`,
+    `findManifests` -> `getPotentiallyValidManifestFile`, verified at tag
+    v3.1.8 — the version this estate runs), so `root` adopts an Application
+    declared as `.yml` or `.json` exactly as it adopts a `.yaml` one. A gate
+    that globbed `*.yaml` alone would miss a restored copy under either other
+    extension, silently. `.jsonnet` is Argo's to evaluate, not a plain
+    manifest this gate can `yaml.safe_load`, and nothing under `infra/` uses
+    it — the two red cases below prove the two extensions this gate adds, not
+    a claim about jsonnet.
     """
-    for path in sorted((tree / "infra").glob("*.yaml")):
+    paths: list[Path] = []
+    for pattern in ("*.yaml", "*.yml", "*.json"):
+        paths += (tree / "infra").glob(pattern)
+    for path in sorted(paths):
         for document in yaml.safe_load_all(path.read_text()):
             if isinstance(document, dict) and document.get("kind") == "Application":
                 yield path, document
@@ -164,3 +179,18 @@ def test_a_restored_infra_child_application_under_another_filename_reddens(tmp_p
     tree = a_copy_of_the_tree(tmp_path)
     (tree / "infra" / "operators-arc.yaml").write_text(RESTORED_CHILD_APPLICATION.format(name="arc"))
     assert infra_children_still_here(tree) == ["arc"]
+
+
+def test_a_restored_infra_child_application_as_yml_reddens(tmp_path: Path) -> None:
+    """Red case: Argo's directory source adopts `.yml` exactly as `.yaml`, so this gate must too."""
+    tree = a_copy_of_the_tree(tmp_path)
+    (tree / "infra" / "tls-app.yml").write_text(RESTORED_CHILD_APPLICATION.format(name="tls"))
+    assert infra_children_still_here(tree) == ["tls"]
+
+
+def test_a_restored_infra_child_application_as_json_reddens(tmp_path: Path) -> None:
+    """Red case: Argo's directory source adopts `.json` exactly as `.yaml`, so this gate must too."""
+    tree = a_copy_of_the_tree(tmp_path)
+    application = yaml.safe_load(RESTORED_CHILD_APPLICATION.format(name="estate-front"))
+    (tree / "infra" / "estate-front-app.json").write_text(json.dumps(application))
+    assert infra_children_still_here(tree) == ["estate-front"]

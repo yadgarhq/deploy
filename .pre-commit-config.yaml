@@ -86,3 +86,32 @@ repos:
         additional_dependencies: ["pyyaml==6.0.3"]
         always_run: true
         pass_filenames: false
+
+      # NO JOB RUNS `scripts/tests/` ANY MORE EITHER, AND THAT WAS A GAP THIS
+      # MERGE OPENED RATHER THAN CLOSED. The deleted `two-owners` CI job
+      # (`.github/workflows/ci.yaml`) was the ONLY runner of
+      # `scripts/tests/test_no_two_owners.py`; the shared `ci-pr.yaml`'s
+      # `test` job SKIPS here (this repository builds nothing `go test` or
+      # `cargo test` would run), so nothing in the shared workflow ever ran
+      # pytest. `scripts/tests/test_infra_children_handed_over.py` — this
+      # merge's own replacement gate — would therefore run NOWHERE without
+      # this hook: written, never executed, exactly the defect the EKU wall
+      # and `no-test-skips` both exist to catch.
+      #
+      # OFFLINE, DELIBERATELY, unlike the old `two-owners` CI job. It reads
+      # `infra/*.yaml` and nothing else — no `helm`, no registry — so it
+      # belongs here rather than as a new GitHub Actions job, the same
+      # distinction `policy-sources-named` draws against `two-owners` above.
+      #
+      # `always_run` / `pass_filenames: false`, for the same reason
+      # `policy-sources-named` gives: the suite's whole point is to notice an
+      # ABSENCE (no `INFRA_CHILDREN_HANDOVER` name declared under `infra/`),
+      # and a hook handed only the changed-file list cannot see a file that
+      # is not there.
+      - id: scripts-tests
+        name: scripts/tests passes (ledger 1212's two-owners gap, ADR-0824)
+        entry: python -m pytest scripts/tests -q
+        language: python
+        additional_dependencies: ["pyyaml==6.0.3", "pytest==8.4.2"]
+        always_run: true
+        pass_filenames: false
