@@ -3005,6 +3005,17 @@ done
 # infra re-synced at this merge's sha. Expect Synced/Healthy and the merge commit.
 kubectl --context kind-yadgar -n argocd get application infra \
   -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision}{"\n"}'
+
+# Prune=false also reached each child's last-applied-configuration. The next
+# merge's prune decision reads the live object, but E2 checked this too. Expect
+# `<name>: Prune=false` on all five lines; a line with nothing after the colon
+# means STOP before the deletion merge.
+for app in arc estate-front estate-front-runner tls yadgar; do
+  printf '%s: ' "$app"
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' \
+    | grep -o 'Prune=false' || echo
+done
 ```
 
 **Rollback:** revert this merge. The revert removes the annotation and

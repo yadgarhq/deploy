@@ -1267,8 +1267,9 @@ def test_a_restored_operator_application_under_another_filename_reddens(tmp_path
 # without this annotation landed one merge ahead, that deletion would prune
 # the five live `Application` OBJECTS — `yadgar` among them — before `root`
 # could adopt them, costing each its uid. None carries a finalizer (measured
-# 2026-10-01 on `kind-yadgar`), so the workloads would survive, but unowned
-# and renamed in Argo's eyes.
+# 2026-10-01 on `kind-yadgar`), so the workloads would survive. The names
+# would not change, but each Application object would be re-identified
+# (tracking-id and uid) when `root` recreated it.
 #
 # `infra` ITSELF IS EXCLUDED. It declares itself in `infra/apps.yaml`, and
 # leaves by a hand delete rather than by a prune, so `Prune=false` on it would
@@ -1315,7 +1316,12 @@ def test_every_infra_child_application_carries_prune_false(working_tree: Path) -
 
 
 def test_the_infra_root_does_not_carry_prune_false(working_tree: Path) -> None:
-    """`infra` leaves by a hand delete; the guard is on its children, never on itself."""
+    """`infra` carries NO `sync-options` annotation at all, `Prune=false` or any other.
+
+    `infra` leaves by a hand delete, so the guard is on its children, never on
+    itself. Any `sync-options` value on `infra` fails this test, not only
+    `Prune=false`.
+    """
     for _, application in applications(working_tree):
         metadata = application.get("metadata") or {}
         if metadata.get("name") == "infra":
