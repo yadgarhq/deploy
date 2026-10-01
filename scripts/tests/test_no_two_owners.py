@@ -2098,3 +2098,78 @@ def test_a_pinned_nodeport_on_the_probe_envoyproxy_reddens(working_tree: Path) -
     container["args"][0] = pinned
     problems = probe_violations(rendered)
     assert any("pins a nodePort" in p for p in problems), problems
+
+
+# ── LEDGER 1212: THE `yadgar` APPLICATION RETRIES A FAILED SYNC, FINITELY ────
+#
+# A COLD INSTALL CAN APPLY THE THREE MariaDB CRs BEFORE THEIR CRD OR THE
+# OPERATOR'S WEBHOOK EXISTS. The operators left this repository at E2 and are
+# children of `yadgarhq/argocd`'s root now, so no sync wave orders them against
+# `yadgar` any more, and the webhooks are `failurePolicy: Fail`. Argo's
+# automated sync does not reattempt a failed sync of the same revision (the
+# comment on `retry` in `infra/tls-app.yaml` quotes the rule), so without a
+# retry the Application stays failed until the next commit.
+#
+# A NAMED GATE, NOT A CENSUS, and that is deliberate rather than an oversight.
+# `infra`, `arc`, `estate-front` and `estate-front-runner` declare no retry
+# today and are out of scope here. What IS asserted of every Application is the
+# weaker property: a retry, where declared, is finite — Argo reads a negative
+# `limit` as unlimited, and a missing `maxDuration` as no cap on the backoff.
+#
+# THE SHAPE IS THE OPERATORS' OWN, from `yadgarhq/argocd`'s `applications/`:
+# six attempts at 15s, 30s, 1m, 2m, 4m and 5m, about 12.75 minutes in all.
+REQUIRED_RETRY: dict[str, dict] = {
+    "yadgar": {
+        "limit": 6,
+        "backoff": {"duration": "15s", "factor": 2, "maxDuration": "5m"},
+    },
+}
+
+
+def retry_violations(tree: Path) -> list[str]:
+    """Every Application whose retry is missing where required, or not finite."""
+    problems: list[str] = []
+    for path, application in applications(tree):
+        name = str((application.get("metadata") or {}).get("name"))
+        retry = ((application.get("spec") or {}).get("syncPolicy") or {}).get("retry")
+        if name in REQUIRED_RETRY and retry != REQUIRED_RETRY[name]:
+            problems.append(f"{name} ({path.name}): retry is {retry!r}, want {REQUIRED_RETRY[name]!r}")
+        if retry is None:
+            continue
+        limit = retry.get("limit")
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            problems.append(f"{name} ({path.name}): retry.limit {limit!r} is not a finite count")
+        if not (retry.get("backoff") or {}).get("maxDuration"):
+            problems.append(f"{name} ({path.name}): retry.backoff.maxDuration is unset")
+    return problems
+
+
+def test_every_required_retry_is_declared_and_every_retry_is_finite(working_tree: Path) -> None:
+    """Ledger 1212: `yadgar` retries in the operators' shape; no retry is unbounded."""
+    problems = retry_violations(working_tree)
+    print(f"[1212] {len(list(applications(working_tree)))} Application(s) examined, {len(problems)} problem(s)")
+    assert not problems, problems
+
+
+def _rewrite_yadgar_retry(tree: Path, old: str, new: str) -> None:
+    path = tree / "infra" / "yadgar-app.yaml"
+    text = path.read_text()
+    assert old in text, f"the retry block in yadgar-app.yaml moved; update this red case ({old!r})"
+    path.write_text(text.replace(old, new, 1))
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected"),
+    [
+        ("    retry:\n      limit: 6\n", "    noRetry:\n      limit: 6\n", "retry is None"),
+        ("      limit: 6\n", "      limit: -1\n", "is not a finite count"),
+        ("        maxDuration: 5m\n", "", "maxDuration is unset"),
+    ],
+    ids=["deleted", "unlimited", "uncapped"],
+)
+def test_a_missing_or_unbounded_retry_reddens(tmp_path: Path, old: str, new: str, expected: str) -> None:
+    """Red cases: delete the block, make it unlimited, or uncap it; `yadgar` is named."""
+    tree = a_copy_of_the_tree(tmp_path)
+    _rewrite_yadgar_retry(tree, old, new)
+    problems = retry_violations(tree)
+    assert any(p.startswith("yadgar ") and expected in p for p in problems), problems
