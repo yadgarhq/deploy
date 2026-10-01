@@ -126,22 +126,31 @@ need on the rare occasion it arises.
 
 ## What is here
 
-| Path                                                  |                                                                                      |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `infra/apps.yaml`                                     | app-of-apps entry point for everything that is not Argo itself                       |
-| `infra/databases-app.yaml` + `infra/databases/`       | the per-module database instances, one per module (D58)                              |
-| `infra/valkey-app.yaml` + `infra/valkey/`             | one shared cache (D21), hand-written rather than a chart                             |
-| `infra/nats.yaml`                                     | JetStream, asynchronous work only (D22)                                              |
-| `infra/tls-app.yaml` + `infra/tls/`                   | the ClusterIssuer, the gateway certificate and the Gateway itself (D71)              |
-| `infra/arc.yaml`                                      | actions-runner-controller — runs no workflow itself; see its cluster-wide RBAC below |
-| `infra/estate-front-app.yaml` + `infra/estate-front/` | the runner's NetworkPolicy and the stable edge address it dials                      |
-| `infra/estate-front-runner.yaml`                      | the `estate-front` runner scale set `yadgarhq/estate`'s contract suite runs on       |
+| Path                                            |                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------- |
+| `infra/apps.yaml`                               | app-of-apps entry point for everything that is not Argo itself          |
+| `infra/databases-app.yaml` + `infra/databases/` | the per-module database instances, one per module (D58)                 |
+| `infra/valkey-app.yaml` + `infra/valkey/`       | one shared cache (D21), hand-written rather than a chart                |
+| `infra/nats.yaml`                               | JetStream, asynchronous work only (D22)                                 |
+| `infra/tls/`                                    | the ClusterIssuer, the gateway certificate and the Gateway itself (D71) |
+| `infra/estate-front/`                           | the runner's NetworkPolicy and the stable edge address it dials         |
 
 The operator Applications — `cert-manager`, `keda`, `mariadb-operator`,
 `mariadb-operator-crds`, `envoy-gateway` and `prometheus` — are no longer
 declared here. E2 of the operators handover (ADR-0824) deleted them from
 `infra/`, and E3 declares the same specs in `yadgarhq/argocd`'s
 `applications/`, where its `root` Application adopts them by name.
+
+`infra`'s own five remaining children — `arc`, `estate-front`,
+`estate-front-runner`, `tls` and `yadgar` — are retired by the same E2/E3
+pattern (ADR-0824). `infra/arc.yaml`, `infra/estate-front-app.yaml`,
+`infra/estate-front-runner.yaml`, `infra/tls-app.yaml` and
+`infra/yadgar-app.yaml` are deleted; `yadgarhq/argocd`'s `applications/`
+declares the same five specs, and its `root` adopts each by name. `arc` and
+`estate-front-runner` sourced a chart with no `infra/` directory of their own,
+so no row above names them any more. `infra/tls/` and `infra/estate-front/`
+stay, still sourced by the `tls` and `estate-front` Applications — now under
+`yadgarhq/argocd` — until the directories themselves are retired.
 
 ## Reaching the cluster from the host — the rootless constraint
 

@@ -80,10 +80,15 @@ jobs:
   # `scripts/runner_image_pinned.py` leaves with it. `argocd` carries the
   # gate's signature half forward as its own job.
   #
-  # NO `two-owners` JOB HERE ANY MORE EITHER. It rendered the pinned parent
-  # chart against every surviving `deploy` Application
-  # (`plans/retiring-the-deploy-copies.md`), and both of its subjects —
-  # `infra/tls-app.yaml`'s destination and `infra/yadgar-app.yaml`'s pin — are
-  # handed to `yadgarhq/argocd` in this same merge. `scripts/tests/test_no_two_owners.py`
-  # leaves with it; `argocd` carries the gate forward, pointed at
-  # `applications/*.yaml`.
+  # NO `two-owners` JOB HERE ANY MORE EITHER, AND IT RAN MORE THAN ITS NAME
+  # SAYS. `scripts/tests/test_no_two_owners.py` was the D/P two-owners render
+  # comparison (`plans/retiring-the-deploy-copies.md`) PLUS the migration's
+  # whole accumulated suite: `infra/yadgar/values.yaml` property checks (the
+  # preflight flag, the pin, the bootstrap hooks) and the render-equality of
+  # `infra/tls/` and `infra/estate-front/` against the parent. Every one of
+  # those subjects — `infra/tls-app.yaml`'s destination,
+  # `infra/yadgar-app.yaml`'s pin, and the two directories themselves — is
+  # handed to `yadgarhq/argocd` in this same merge. `argocd` carries the
+  # whole suite forward, pointed at `applications/*.yaml` and
+  # `manifests/{tls,estate-front}/`. NOTHING GATES THOSE THREE PATHS BETWEEN
+  # THIS MERGE AND THAT ONE — MIGRATION_NOTES.md's freeze note says so.

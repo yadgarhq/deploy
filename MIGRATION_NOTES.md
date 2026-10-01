@@ -2958,8 +2958,10 @@ adopts them by name.
 **ORDERING CONTRACT, THE SAME ONE `#77`/`#76` USED.** Merge this PR. Run the
 checks below. Then merge `yadgarhq/argocd`'s merge 3 PROMPTLY. Between the two
 merges the five Applications are unowned, and only `Prune=false` protects
-them. Do not let `argocd`'s merge land first: it cannot, since it adopts
-objects this merge is what creates the unowned window for.
+them. `argocd`'s merge must not land first: `root` would then adopt-by-name
+objects `infra` is still prepared to prune (this merge is what creates the
+unowned window `root` needs), and `infra` and `root` would fight over each
+tracking-id on every sync.
 
 **`infra` does NOT read `Synced` in the window, and that is expected.** Argo
 reports five live resources git no longer declares as needing a prune.
@@ -2968,6 +2970,31 @@ reports five live resources git no longer declares as needing a prune.
 `Synced` once `argocd`'s merge 3 has run, because `root` then rewrites each
 tracking-id to `root:…` and `infra` stops reading the five as its own.
 
+**DO NOT DELETE `infra` BY ANY MEANS — ESPECIALLY NOT `argocd app delete` —
+UNTIL M3's TRACKING-ID REWRITE IS VERIFIED ON ALL FIVE.** `argocd app delete`
+cascades by default, and Argo CD v3.1.8's own deletion path
+(`shouldBeDeleted`, `controller/appcontroller.go:1162`) honours a resource's
+own `Delete=false` sync-option or `resource-policy: keep` annotation — NOT
+`Prune=false`, which is a PRUNE-time guard (drift reconciliation) and has no
+bearing on a CASCADE delete of the parent Application. `Prune=false` on each
+child's own metadata protects it from `infra`'s automated prune; it does
+nothing to protect it from a cascading delete OF `infra` itself. M4's planned
+command is `kubectl --context kind-yadgar -n argocd delete application
+infra` (`infra` carries no finalizer, so this is a non-cascading delete of
+`infra` alone) — run ONLY AFTER `yadgarhq/argocd`'s merge 3 has landed and
+each child's tracking-id reads `root:…`.
+
+**FREEZE `infra/tls/`, `infra/estate-front/` and `infra/yadgar/values.yaml`
+UNTIL MERGE 3 LANDS.** This merge deletes the only gate that covered their
+properties — `scripts/tests/test_no_two_owners.py` asserted
+`infra/yadgar/values.yaml`'s preflight flag and pin, and the render-equality
+of `infra/tls/` and `infra/estate-front/` against the parent, alongside the
+D/P two-owners comparison. `yadgarhq/argocd`'s merge 3 carries the whole
+suite forward, but nothing enforces it in `deploy` between the two merges,
+and merge 3 assumes these three paths are byte-identical to what it is
+adopting (K3's render gate). An edit to any of them in this window is
+invisible to CI and breaks that assumption silently.
+
 ### Before this merge — read-only, stop on any mismatch
 
 `--context kind-yadgar` on every line. This host's default context is a
@@ -2975,15 +3002,19 @@ production cluster.
 
 ```bash
 # 1. Each child: Prune=false present, NO finalizer, uid as in merge 1's table,
-#    tracking-id still names `infra`. A finalizer on any one -> STOP.
+#    tracking-id still names `infra`, and its own last sync operation's start
+#    time — a mismatch against the baseline below after this merge means a
+#    child re-synced, which this merge must not cause. A finalizer on any one
+#    -> STOP.
 for app in arc estate-front estate-front-runner tls yadgar; do
   kubectl --context kind-yadgar -n argocd get application "$app" \
-    -o jsonpath='{.metadata.name} {.metadata.uid} [{.metadata.finalizers}] {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"}'
+    -o jsonpath='{.metadata.name} {.metadata.uid} [{.metadata.finalizers}] {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id} {.status.operationState.startedAt}{"\n"}'
 done
 
-# 2. infra Synced/Healthy at merge 1's sha (05b160b) or later.
+# 2. infra Synced/Healthy at merge 1's sha (05b160b) or later, and its own
+#    last sync operation's start time.
 kubectl --context kind-yadgar -n argocd get application infra \
-  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision}{"\n"}'
+  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision} {.status.operationState.startedAt}{"\n"}'
 
 # 3. K4: Applications in namespace argocd. Expect 13.
 kubectl --context kind-yadgar -n argocd get applications --no-headers | wc -l
@@ -3000,43 +3031,54 @@ and an `infra:argoproj.io/Application:argocd/<name>` tracking-id. `infra` read
 `Synced`/`Healthy` at `f7c3f6e416f57dc87287d0f3775e7f0a2873154f`. K4 read 13.
 K6 read 52 CRDs, sorted name=uid hash `a8026323ea9d31c2`.
 
-| Application           | uid                                    |
-| --------------------- | -------------------------------------- |
-| `arc`                 | `ff9e2c3a-52ec-41ed-a32f-8138f29f86c3` |
-| `estate-front`        | `521f859e-f888-4c4f-95dc-48728acf11ab` |
-| `estate-front-runner` | `4414811c-f7c9-47b3-b86e-b47a287cfdba` |
-| `tls`                 | `89f9542e-34ae-4d01-9a76-41c7dd58bcf0` |
-| `yadgar`              | `6181bd1c-3d73-4316-a864-b4e188dc6460` |
-| `infra`               | `218adab6-42a4-430a-8a5a-fbe94079c0d0` |
+| Application           | uid                                    | `status.operationState.startedAt` |
+| --------------------- | -------------------------------------- | --------------------------------- |
+| `arc`                 | `ff9e2c3a-52ec-41ed-a32f-8138f29f86c3` | `2026-09-05T12:40:28Z`            |
+| `estate-front`        | `521f859e-f888-4c4f-95dc-48728acf11ab` | `2026-09-05T12:40:18Z`            |
+| `estate-front-runner` | `4414811c-f7c9-47b3-b86e-b47a287cfdba` | `2026-09-06T09:37:45Z`            |
+| `tls`                 | `89f9542e-34ae-4d01-9a76-41c7dd58bcf0` | `2026-09-27T16:51:07Z`            |
+| `yadgar`              | `6181bd1c-3d73-4316-a864-b4e188dc6460` | `2026-10-01T08:09:19Z`            |
+| `infra`               | `218adab6-42a4-430a-8a5a-fbe94079c0d0` | `2026-10-01T16:06:21Z`            |
 
-Re-run all four reads just before the merge. A changed uid, a finalizer, or a
+Re-run all five reads just before the merge. A changed uid, a finalizer, or a
 missing `Prune=false` -> STOP and do not merge.
 
 ### After this merge — read-only
 
 ```bash
 # 1. Each child still exists with the SAME uid as the table above, still
-#    Prune=false, still infra: tracking-id, still Synced/Healthy itself.
+#    Prune=false, still infra: tracking-id, still Synced/Healthy itself, and
+#    the SAME startedAt as the table above — proof that this merge triggered
+#    no child sync operation (K3's render gate says none should: the new
+#    source renders identically, so autoSync has nothing OutOfSync to act on).
 for app in arc estate-front estate-front-runner tls yadgar; do
   kubectl --context kind-yadgar -n argocd get application "$app" \
-    -o jsonpath='{.metadata.name} {.metadata.uid} {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id} {.status.sync.status}/{.status.health.status}{"\n"}'
+    -o jsonpath='{.metadata.name} {.metadata.uid} {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id} {.status.sync.status}/{.status.health.status} {.status.operationState.startedAt}{"\n"}'
 done
 
 # 2. infra: Healthy, OutOfSync, with EXACTLY these five requiring a prune,
 #    all Applications, all skipped by Prune=false (no live delete happens).
+#    infra's OWN startedAt DOES advance — it re-synced to read the deletion.
 kubectl --context kind-yadgar -n argocd get application infra \
-  -o jsonpath='{.status.sync.status}/{.status.health.status}{"\n"}'
+  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision} {.status.operationState.startedAt}{"\n"}'
 kubectl --context kind-yadgar -n argocd get application infra -o json \
   | jq -r '.status.resources[] | select(.requiresPruning == true) | "\(.kind)/\(.name)"' | sort
 # expect exactly: Application/arc Application/estate-front
 #                 Application/estate-front-runner Application/tls Application/yadgar
 
-# 3. K4 still 13 (no object has actually been deleted yet); K6 still 52 CRDs
-#    and the same hash `a8026323ea9d31c2`.
+# 3. K4: Applications in namespace argocd. Expect 13 — unchanged, because no
+#    object has actually been deleted yet, only its manifest in git.
+kubectl --context kind-yadgar -n argocd get applications --no-headers | wc -l
+
+# 4. K6: CRD count and hash, unchanged. Expect 52 and `a8026323ea9d31c2`.
+kubectl --context kind-yadgar get crd --no-headers | wc -l
+kubectl --context kind-yadgar get crd -o json \
+  | jq -r '[.items[]|.metadata.name+"="+.metadata.uid]|sort|join("\n")' | sha256sum | cut -c1-16
 ```
 
-Any uid change, any of the five missing, or any extra `requiresPruning`
-resource -> STOP. Do not merge `yadgarhq/argocd`'s merge 3, and report.
+Any uid change, any of the five missing, any extra `requiresPruning`
+resource, or any CHILD's `startedAt` moving off the table above -> STOP. Do
+not merge `yadgarhq/argocd`'s merge 3, and report.
 
 **Merge `yadgarhq/argocd`'s merge 3 promptly after this one.** The five
 children are unowned until it lands — `Prune=false` is what keeps them alive
