@@ -126,31 +126,28 @@ need on the rare occasion it arises.
 
 ## What is here
 
-| Path                                            |                                                                         |
-| ----------------------------------------------- | ----------------------------------------------------------------------- |
-| `infra/apps.yaml`                               | app-of-apps entry point for everything that is not Argo itself          |
-| `infra/databases-app.yaml` + `infra/databases/` | the per-module database instances, one per module (D58)                 |
-| `infra/valkey-app.yaml` + `infra/valkey/`       | one shared cache (D21), hand-written rather than a chart                |
-| `infra/nats.yaml`                               | JetStream, asynchronous work only (D22)                                 |
-| `infra/tls/`                                    | the ClusterIssuer, the gateway certificate and the Gateway itself (D71) |
-| `infra/estate-front/`                           | the runner's NetworkPolicy and the stable edge address it dials         |
+**Nothing is, any more. `infra/` does not exist.** This repository declared no
+Argo `Application` at all after M5 of the `infra` retirement (ADR-0828).
+Every Application this organisation runs — the module ApplicationSet, every
+operator, and what `infra/` used to declare directly (`arc`, `estate-front`,
+`estate-front-runner`, `tls`, `yadgar`) — is declared in
+[`yadgarhq/argocd`](https://github.com/yadgarhq/argocd), under `root`.
 
-The operator Applications — `cert-manager`, `keda`, `mariadb-operator`,
-`mariadb-operator-crds`, `envoy-gateway` and `prometheus` — are no longer
-declared here. E2 of the operators handover (ADR-0824) deleted them from
-`infra/`, and E3 declares the same specs in `yadgarhq/argocd`'s
-`applications/`, where its `root` Application adopts them by name.
+The retirement ran in five steps: E1/E2 (`deploy#76`/`#77`) released the six
+operator Applications from `infra`'s own prune; E3 (`argocd#42` ladder)
+adopted them into `root` by name. M1/M2 (`deploy#79`/`#80`) did the same for
+`infra`'s five remaining children; M3 (`argocd#54`) adopted them. M4 deleted
+the live `infra` Application object itself by hand
+(`kubectl --context kind-yadgar -n argocd delete application infra`,
+2026-10-01 — `infra` was never git-managed by anything after M2, so this was
+not a GitOps change). M5 (this repository, this PR) deleted what `infra` left
+behind in git: `infra/apps.yaml`, `infra/tls/`, `infra/estate-front/`,
+`infra/yadgar/values.yaml`, the `policy-sources-named` pre-commit hook and its
+script (ported to `yadgarhq/argocd` at M3), and the `make bootstrap` line that
+applied `infra/apps.yaml`.
 
-`infra`'s own five remaining children — `arc`, `estate-front`,
-`estate-front-runner`, `tls` and `yadgar` — are retired by the same E2/E3
-pattern (ADR-0824). `infra/arc.yaml`, `infra/estate-front-app.yaml`,
-`infra/estate-front-runner.yaml`, `infra/tls-app.yaml` and
-`infra/yadgar-app.yaml` are deleted; `yadgarhq/argocd`'s `applications/`
-declares the same five specs, and its `root` adopts each by name. `arc` and
-`estate-front-runner` sourced a chart with no `infra/` directory of their own,
-so no row above names them any more. `infra/tls/` and `infra/estate-front/`
-stay, still sourced by the `tls` and `estate-front` Applications — now under
-`yadgarhq/argocd` — until the directories themselves are retired.
+See `MIGRATION_NOTES.md`'s "Retiring `infra`" sections for the full
+read-before/read-after verification this ladder ran at each step.
 
 ## Reaching the cluster from the host — the rootless constraint
 
@@ -175,10 +172,16 @@ node port 443 needs a pod bound to it, since NodePort's default range starts at 
 
 ## Sync waves
 
+This repository declares no Application any more (the `infra` retirement,
+ADR-0828), so it owns none of these waves itself. Recorded here because the
+scheme is part of what this repository's own `infra` app-of-apps used to
+anchor, at `-15`, before M4/M5 retired it; `yadgarhq/argocd` is the current
+authority on what runs at each wave.
+
 | Wave |                                                                |
 | ---- | -------------------------------------------------------------- |
 | -20  | Argo's own root                                                |
-| -15  | this app-of-apps                                               |
+| -15  | `infra`, RETIRED — see above                                   |
 | -12  | CRDs — they must exist before the controller that watches them |
 | -10  | operators, cache, broker                                       |
 | 10   | module services, via the ApplicationSet                        |
@@ -234,5 +237,7 @@ patcher does not already hold, so this is not a free path to cluster-admin — b
 it is a cluster-scoped write on RBAC objects held by a controller whose purpose
 is to run code GitHub hands it, and the chart offers no single-namespace mode
 for it. Read off `helm template` at chart 0.14.2 on 2026-09-05; the full list is
-on `infra/arc.yaml`. The confinement in `infra/estate-front/` is about the pods
-that execute workflow code, and it says nothing about this.
+on `yadgarhq/argocd`'s `applications/arc.yaml` (adopted from this repository's
+own `infra/arc.yaml` at M3, ADR-0824). The confinement in `yadgarhq/argocd`'s
+`manifests/estate-front/` is about the pods that execute workflow code, and it
+says nothing about this.

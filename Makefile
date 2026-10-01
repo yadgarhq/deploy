@@ -37,10 +37,11 @@ ARGOCD_REPO ?= ../argocd
 #
 # SO THEY ARE THE ONE THING A CLUSTER RECREATE USED TO NEED A HUMAN TO REMEMBER,
 # and forgetting was invisible in different ways for each. The CA announces
-# itself: `infra/tls/preflight.yaml` refuses, names the Secret and prints this
-# command. `iam-keys` does not — the pods sit in `ContainerCreating` with the
-# reason only in `kubectl describe`, and Argo reports the Application Healthy
-# throughout. Both were missing after the 2026-09-05 recreate.
+# itself: `yadgarhq/argocd`'s `manifests/tls/ca-preflight.yaml` refuses, names
+# the Secret and prints this command. `iam-keys` does not — the pods sit in
+# `ContainerCreating` with the reason only in `kubectl describe`, and Argo
+# reports the Application Healthy throughout. Both were missing after the
+# 2026-09-05 recreate.
 #
 # `estate-runner-github` is the quietest of the three. Argo has no health check
 # for `actions.github.com` kinds, so the Application reports Synced AND Healthy
@@ -128,7 +129,6 @@ bootstrap: secrets ## Install Argo CD into the running cluster, then hand contro
 		--dry-run=client -o yaml | kubectl apply -f -
 	@echo "--- Argo CD up. Handing control to git. ---"
 	kubectl apply -f $(ARGOCD_REPO)/projects/root.yaml
-	kubectl apply -f infra/apps.yaml
 	@echo "Argo now manages its own values from yadgarhq/argocd. make ui / make password."
 
 ## The initial install uses --set, not the values file in yadgarhq/argocd. That
