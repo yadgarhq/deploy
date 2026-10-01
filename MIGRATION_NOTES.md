@@ -2658,3 +2658,111 @@ kubectl --context kind-yadgar -n yadgar logs deploy/iam | grep 'crypto keys load
 **Rollback:** revert this merge. The hooks stop rendering and the Secrets stay,
 because nothing tracks them. Delete the two completed hook Jobs and their RBAC
 by hand if they must go; Argo does not prune hooks.
+
+## B9 — preflight on, parent 0.3.13 (NEEDS-MAX to merge, `plans/the-one-application-install.md`)
+
+**What the merge does.** It moves the parent pin `0.3.7` → `0.3.13` and sets
+`platform.preflight.enabled: true`. The offline K3 render, with this
+organisation's values:
+
+- The pin alone changes one field: `Deployment/gateway`'s image
+  (`a29dae79…` → `a9c1ad6b…`, gateway 0.9.54, new code from gateway#96).
+- The flip adds eight hook objects and changes 0 fields elsewhere:
+  `ServiceAccount`, `Role`, `RoleBinding` and `Job` `preflight` (PreSync), and
+  the same four `envoy-gateway-probe` (PostSync).
+- So `gateway` rolls. No other pod rolls.
+
+**WHAT B8 PROVED, AND WHAT IT DID NOT.** B8 ran on 2026-10-01 at parent
+v0.3.12 and v0.3.13, on a fresh install. All four `preflight` arms passed,
+the mariadb-operator dry run and Prometheus included, and so did the
+`envoy-gateway-probe`. B8 recorded the cleanup for `Secret/preflight-probe`
+only. So two things run here for the first time: the UPGRADE path of this
+cluster, and the full cleanup record, which step 4 below reads.
+
+**A FAILED HOOK IS RETRIED, BUT NOT FOR EVER.** This Application sets no
+`syncPolicy.retry`. Argo 3.1.8 then gives an automated sync its default retry,
+`limit: 5`. So a failed sync is retried up to 5 times with Argo's default
+backoff. A persistent failure then holds at that commit until a manual sync, a
+new commit, or a revert.
+
+**For information only, not a control: the KEDA probe's 06:00–07:00 UTC
+window.** The probe's ScaledObject has a cron trigger for that hour with
+`desiredReplicas: 1`. A sync in that hour can let KEDA scale
+`Deployment/preflight-probe` to one pod, which crashes, until the probe deletes
+it a few seconds later.
+
+**Every `kubectl` below names `--context kind-yadgar`, and every `argocd` names
+`--core --kube-context kind-yadgar`.** This host's default context is a
+production cluster.
+
+```bash
+# BEFORE THE MERGE — the baseline. Keep the output.
+kubectl --context kind-yadgar -n yadgar get pods \
+  -o custom-columns=NAME:.metadata.name,START:.status.startTime --sort-by=.metadata.name
+kubectl --context kind-yadgar -n envoy-gateway-system get svc \
+  -l gateway.envoyproxy.io/owning-gateway-name=edge \
+  -o jsonpath='{range .items[*]}{.metadata.uid} {.spec.ports[*].nodePort}{"\n"}{end}'
+
+# 0. A sync ran at the merge commit. The gateway image moves, so the
+#    Application goes OutOfSync and auto-syncs. Expect the merge sha on both lines.
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{.status.sync.revisions}{"\n"}{.status.operationState.syncResult.revisions}{"\n"}'
+
+# 1. The sync finished. Expect: Succeeded Synced/Healthy.
+kubectl --context kind-yadgar -n argocd get application yadgar \
+  -o jsonpath='{.status.operationState.phase} {.status.sync.status}/{.status.health.status}{"\n"}'
+
+# 2. The hooks ran in their phases. Expect PreSync Job/preflight Succeeded,
+#    PostSync Job/envoy-gateway-probe Succeeded, and the bootstrap PreSync hooks as before.
+kubectl --context kind-yadgar -n argocd get application yadgar -o json \
+  | jq -r '.status.operationState.syncResult.resources[] | select(.hookType != null) | "\(.hookType) \(.kind)/\(.name) \(.hookPhase // .status)"'
+
+# 3. The probes answered. Expect the last lines "preflight: probed 4 operators"
+#    and "envoy-gateway-probe: probed 1 operators".
+kubectl --context kind-yadgar -n yadgar logs job/preflight
+kubectl --context kind-yadgar -n yadgar logs job/envoy-gateway-probe
+
+# 4. The probes cleaned up. Expect no output from either command. The two
+#    completed Jobs and their RBAC stay; that is `before-hook-creation`.
+#    Deletes finish asynchronously: if a line prints, re-run after ~30s before
+#    treating the output as a leak.
+kubectl --context kind-yadgar -n yadgar get issuer,certificate,secret,deployment,scaledobject,gateway,envoyproxy \
+  --ignore-not-found | grep -E 'preflight-probe|envoy-gateway-probe'
+kubectl --context kind-yadgar -n envoy-gateway-system get deploy,svc --ignore-not-found \
+  -l gateway.envoyproxy.io/owning-gateway-name=envoy-gateway-probe
+
+# 5. Only gateway rolled. Compare with the baseline: new start times on the
+#    gateway pods only, every other row unchanged. Expect the gateway image a9c1ad6b….
+kubectl --context kind-yadgar -n yadgar get pods \
+  -o custom-columns=NAME:.metadata.name,START:.status.startTime --sort-by=.metadata.name
+kubectl --context kind-yadgar -n yadgar get deploy gateway \
+  -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+
+# 6. The edge is untouched. Expect the baseline uid and nodePort 30443.
+kubectl --context kind-yadgar -n envoy-gateway-system get svc \
+  -l gateway.envoyproxy.io/owning-gateway-name=edge \
+  -o jsonpath='{range .items[*]}{.metadata.uid} {.spec.ports[*].nodePort}{"\n"}{end}'
+
+# 7. The edge still serves. Expect HTTP 405 and ssl_verify_result=0.
+curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' \
+  --cacert <(kubectl --context kind-yadgar -n cert-manager get secret yadgar-dev-ca \
+    -o jsonpath='{.data.tls\.crt}' | base64 -d) \
+  --resolve gateway.yadgar.internal:18443:127.0.0.1 https://gateway.yadgar.internal:18443/
+```
+
+**If a probe fails.** Read its log first: each arm names the operator and
+prints the API server's answer. A PreSync failure stops the sync before any
+object applies, so the estate stays at `0.3.7`. A PostSync failure comes after
+the apply, so the new `gateway` is already running.
+
+**Rollback:** revert this merge. The revert renders no probe and pins `0.3.7`
+again, so `gateway` rolls back. If a sync operation is stuck on a hook, Max runs
+`argocd app terminate-op yadgar --core --kube-context kind-yadgar` before the
+revert syncs. The completed probe
+Jobs and their RBAC stay, because Argo does not prune hooks. Delete them by
+hand if they must go:
+
+```bash
+kubectl --context kind-yadgar -n yadgar delete job,rolebinding,role,serviceaccount \
+  preflight envoy-gateway-probe --ignore-not-found
+```

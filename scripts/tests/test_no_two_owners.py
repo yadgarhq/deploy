@@ -1227,9 +1227,16 @@ HOOK_DELETE_POLICY = "before-hook-creation"
 # purpose: live iam 0.8.45 logs its key identity UNVERIFIED (ledger 1155), so
 # the wrong-key refusal the parent's default `iamKeys.create: true` relies on
 # is not armed here. `iam-keys` stays with `make secrets` and 1Password.
+#
+# THE TWO PROBE JOBS MINT NOTHING, AND B9 STATES THAT RATHER THAN FILTERING
+# THEM OUT. `preflight` and `envoy-gateway-probe` are Jobs too, so this map
+# names every Job the render carries, and a probe that started creating a
+# Secret would redden here by name.
 EXPECTED_MINTED = {
     "bootstrap-secrets": ("valkey-password", "nats-auth", "nats-auth-gateway"),
     "admin-bootstrap-token": ("admin-bootstrap-token",),
+    "preflight": (),
+    "envoy-gateway-probe": (),
 }
 NEVER_MINTED = "iam-keys"
 IAM_KEYS_KEY = "platform.bootstrap.iamKeys.create"
@@ -1483,7 +1490,15 @@ def test_a_hook_rendered_copy_is_named_by_the_guard(tmp_path: Path) -> None:
 # Gateway's listener, or the Certificate's issuer, which would reissue the edge
 # leaf from another root. The copies are written out below rather than read from
 # git, for the reason the red cases' subjects give: CI clones at depth 1.
+#
+# PREFLIGHT IS HELD OFF ON BOTH SIDES OF THESE COMPARISONS, AS OF B9. Step 7
+# was measured with `platform.preflight.enabled` false. With it true,
+# reverting `gatewayListener.create` also drops the four `envoy-gateway-probe`
+# hook objects, because that probe is enabled by the listener it probes. That
+# is B9's consequence, asserted by B9's own K3 below, not step 7's.
+PREFLIGHT_OFF: tuple[str, ...] = ("--set", "platform.preflight.enabled=false")
 STEP_7_REVERTED: tuple[str, ...] = (
+    *PREFLIGHT_OFF,
     "--set",
     "platform.edgeTLS.create=false",
     "--set",
@@ -1638,7 +1653,7 @@ def test_step_7_adds_the_four_edge_objects_and_changes_nothing_else(
 ) -> None:
     """K3, first half: the values move is exactly four added objects."""
     before = parent_render(working_tree, STEP_7_REVERTED)
-    after = parent_render(working_tree)
+    after = parent_render(working_tree, PREFLIGHT_OFF)
     changes = field_changes(before, after)
     print(f"[K3 step 7] {len(before)} -> {len(after)} object(s), {len(changes)} change(s)")
     assert changes == {(*o, "<object added or removed>") for o in STEP_7_OBJECTS}, sorted(
@@ -1665,7 +1680,7 @@ def test_an_unpinned_nodeport_reddens_the_edge_comparison(working_tree: Path) ->
 def test_the_hostname_without_the_enrolment_port_reddens(working_tree: Path) -> None:
     """Red case: `global.hostname` alone moves iam's enrolment URL off `:18443`."""
     before = parent_render(working_tree, STEP_7_REVERTED)
-    after = parent_render(working_tree, ("--set", "iam.enrolment.gateway="))
+    after = parent_render(working_tree, (*PREFLIGHT_OFF, "--set", "iam.enrolment.gateway="))
     unexpected = field_changes(before, after) - {
         (*o, "<object added or removed>") for o in STEP_7_OBJECTS
     }
@@ -1774,3 +1789,200 @@ def test_a_narrowed_peer_reddens_the_policy_comparison(working_tree: Path) -> No
     )
     extra = differences - EXPECTED_GATEWAY_INGRESS_METADATA_CHANGES
     assert extra and all(field.startswith("spec.ingress") for _, _, field in extra), differences
+
+
+# ── B9: PREFLIGHT ON, AND THE PIN THAT MAKES IT SAFE ─────────────────────────
+# B9 of `plans/the-one-application-install.md` moves two things in one merge:
+# the parent pin 0.3.7 → 0.3.13 and `platform.preflight.enabled` false → true.
+# Each has its own K3, and each K3 holds the OTHER move fixed, so a failure
+# names which of the two it came from.
+#
+# THE PIN ALONE, values unchanged, preflight off on both sides: one field,
+# `Deployment/gateway`'s image (gateway 0.9.53 → 0.9.54, gateway#96). Measured
+# 2026-10-01: 80 objects on both sides, 79 byte-identical. The old pin is a
+# constant rather than read out of git, for the depth-1 reason the valkey
+# constants above give. The next pin bump re-measures this, which is the point.
+PIN_BEFORE_B9 = "0.3.7"
+B9_PIN_CHANGES = {("Deployment", "gateway", "spec.template.spec.containers[0].image")}
+
+# THE FLIP ALONE, at the current pin: exactly these eight hook objects appear
+# and no field of the other 80 moves. `preflight` runs as PreSync and
+# `envoy-gateway-probe` as PostSync.
+PREFLIGHT_KEY = "platform.preflight.enabled"
+B9_HOOK_OBJECTS = frozenset(
+    (kind, name)
+    for name in ("preflight", "envoy-gateway-probe")
+    for kind in ("ServiceAccount", "Role", "RoleBinding", "Job")
+)
+B9_HOOK_PHASES = {
+    "preflight": "pre-install,pre-upgrade",
+    "envoy-gateway-probe": "post-install,post-upgrade",
+}
+
+# WHAT THE PIN HAS TO CARRY FOR THE FLIP TO BE SAFE HERE, asserted on the
+# render rather than on a version number. `platform` 0.1.20 (parent 0.3.9)
+# moved the Envoy Gateway probe off `edge`'s EnvoyProxy onto its own: on
+# `edge`'s, the probe Gateway's Service asks for nodePort 30443, which `edge`
+# holds (ledger 1189), and the PostSync probe fails on a healthy cluster.
+# `platform` 0.1.21 (parent 0.3.10) added the Prometheus arm, at the address
+# every module ScaledObject here queries.
+PROBE_ENVOYPROXY = "envoy-gateway-probe"
+PREFLIGHT_PROBES = ("cert-manager", "keda", "mariadb-operator", "prometheus")
+PROMETHEUS_ADDRESS = "http://prometheus-server.observability.svc.cluster.local"
+
+# NO CLUSTER-SCOPED RBAC, AND NO OPERATOR OBJECT. The probes act in `yadgar`
+# only, and `platform.operators.create` false keeps the bundled operators,
+# Prometheus and Argo CD out of this Application (ADR-0787).
+CLUSTER_RBAC_KINDS = {"ClusterRole", "ClusterRoleBinding"}
+OPERATOR_API_GROUPS = {"apiextensions.k8s.io", "argoproj.io"}
+OPERATOR_KINDS = {"Namespace", "ClusterRole", "ClusterRoleBinding", "CustomResourceDefinition"}
+
+
+def job_script(documents: list, name: str) -> str:
+    """The rendered script of the Job named `name`, or "" when it is absent."""
+    return scripts_of(documents).get(name, "")
+
+
+def envoyproxy_of_the_probe(script: str) -> str:
+    """The EnvoyProxy the probe Gateway's `parametersRef` names, `$PROBE_NAME` resolved."""
+    refs = re.findall(r'"kind":"EnvoyProxy",\s*"name":"([^"]+)"', script)
+    names = re.findall(r"^PROBE_NAME=(\S+)$", script, re.MULTILINE)
+    resolved = {ref.replace("$PROBE_NAME", names[0] if names else "$PROBE_NAME") for ref in refs}
+    return resolved.pop() if len(resolved) == 1 else f"<{sorted(resolved)}>"
+
+
+def envoyproxy_body_of_the_probe(script: str) -> str:
+    """The JSON the probe POSTs as its own EnvoyProxy, or "" when it posts none."""
+    found = re.search(r"envoyproxy_body=\$\(cat <<JSON\n(.*?)\nJSON", script, re.DOTALL)
+    return found.group(1) if found else ""
+
+
+def probe_violations(documents: list) -> list[str]:
+    """Why this render's probes would fail on this cluster, or nothing. Each names the cause."""
+    problems = []
+    probe = job_script(documents, "envoy-gateway-probe")
+    if not probe:
+        problems.append("Job/envoy-gateway-probe is not rendered")
+    elif envoyproxy_of_the_probe(probe) != PROBE_ENVOYPROXY:
+        problems.append(
+            "envoy-gateway-probe does not run on its own EnvoyProxy; on `edge`'s it asks for nodePort 30443"
+        )
+    elif "nodePort" in envoyproxy_body_of_the_probe(probe):
+        # ITS OWN ENVOYPROXY IS NOT ENOUGH: a body that copied `edge`'s Service
+        # patch would ask for 30443 all the same (ledger 1189).
+        problems.append("envoy-gateway-probe's own EnvoyProxy pins a nodePort; `edge` holds 30443")
+    preflight = job_script(documents, "preflight")
+    declared = re.findall(r'^PROBES="([^"]*)"', preflight, re.MULTILINE)
+    if declared != [" ".join(PREFLIGHT_PROBES)]:
+        problems.append(f"preflight declares {declared}, expected {list(PREFLIGHT_PROBES)}")
+    if f"PROMETHEUS_ADDRESS='{PROMETHEUS_ADDRESS}'" not in preflight:
+        problems.append(f"preflight does not probe Prometheus at {PROMETHEUS_ADDRESS}")
+    return problems
+
+
+def test_the_pin_alone_changes_only_the_gateway_image(tmp_path: Path) -> None:
+    """K3 of B9's pin: 0.3.7 against the current pin, preflight off on both sides."""
+    tree = a_copy_of_the_tree(tmp_path)
+    application = tree / "infra" / "yadgar-app.yaml"
+    text = application.read_text()
+    pinned = re.findall(r"^\s*targetRevision: (\d+\.\d+\.\d+)\s*$", text, re.MULTILINE)
+    assert len(pinned) == 1, pinned
+    application.write_text(text.replace(f"targetRevision: {pinned[0]}", f"targetRevision: {PIN_BEFORE_B9}"))
+    before = parent_render(tree, PREFLIGHT_OFF)
+    after = parent_render(REPOSITORY, PREFLIGHT_OFF)
+    changes = field_changes(before, after)
+    print(f"[K3 B9 pin] {PIN_BEFORE_B9} -> {pinned[0]}: {len(before)} -> {len(after)} object(s), {len(changes)} change(s)")
+    assert len(before) > 0 and len(before) == len(after), (len(before), len(after))
+    assert changes == B9_PIN_CHANGES, sorted(changes)
+
+
+def test_the_flip_adds_the_eight_probe_hooks_and_changes_nothing_else(working_tree: Path) -> None:
+    """K3 of B9's flip: preflight off against the current values, at the current pin."""
+    before = parent_render(working_tree, PREFLIGHT_OFF)
+    after = parent_render(working_tree)
+    changes = field_changes(before, after)
+    print(f"[K3 B9 flip] {len(before)} -> {len(after)} object(s), {len(changes)} change(s)")
+    assert changes == {(*o, "<object added or removed>") for o in B9_HOOK_OBJECTS}, sorted(changes)
+    phases = {
+        (kind, name): annotations[HOOK_ANNOTATION]
+        for (_, kind, name), annotations in hooks_of(after).items()
+        if (kind, name) in B9_HOOK_OBJECTS
+    }
+    assert phases == {o: B9_HOOK_PHASES[o[1]] for o in B9_HOOK_OBJECTS}, phases
+
+
+def test_preflight_is_stated_true(working_tree: Path) -> None:
+    """The flag is written in the values file, not inherited from the parent's default."""
+    values = yaml.safe_load((working_tree / "infra" / "yadgar" / "values.yaml").read_text())
+    stated = ((values.get("platform") or {}).get("preflight") or {})
+    assert stated.get("enabled") is True, f"{PREFLIGHT_KEY} must be stated true, found {stated!r}"
+
+
+def test_the_probes_can_pass_on_this_cluster(working_tree: Path) -> None:
+    """The pinned render carries the probe shapes B9 needs (platform 0.1.20 and 0.1.21)."""
+    problems = probe_violations(parent_render(working_tree))
+    assert not problems, problems
+
+
+def test_the_old_pin_names_both_probe_defects(tmp_path: Path) -> None:
+    """Red case: preflight on at 0.3.7 is refused, naming the nodePort and the missing arm."""
+    tree = a_copy_of_the_tree(tmp_path)
+    application = tree / "infra" / "yadgar-app.yaml"
+    text = application.read_text()
+    pinned = re.findall(r"^\s*targetRevision: (\d+\.\d+\.\d+)\s*$", text, re.MULTILINE)
+    application.write_text(text.replace(f"targetRevision: {pinned[0]}", f"targetRevision: {PIN_BEFORE_B9}"))
+    problems = probe_violations(parent_render(tree))
+    assert any("nodePort 30443" in p for p in problems), problems
+    assert any(p.startswith("preflight declares") for p in problems), problems
+
+
+def test_the_flag_off_drops_every_probe(working_tree: Path) -> None:
+    """Red case: `preflight.enabled` false renders none of the eight hook objects."""
+    hooks = hooks_of(parent_render(working_tree, PREFLIGHT_OFF))
+    found = {(kind, name) for _, kind, name in hooks} & B9_HOOK_OBJECTS
+    assert not found, sorted(found)
+
+
+def test_no_probe_rbac_is_cluster_scoped(working_tree: Path) -> None:
+    """Every RBAC object the render carries is namespaced, the eight probe objects included."""
+    rendered = [d for d in parent_render(working_tree) if isinstance(d, dict)]
+    rbac = [(d["kind"], d["metadata"]["name"]) for d in rendered if d["kind"] in {"Role", "RoleBinding"} | CLUSTER_RBAC_KINDS]
+    print(f"[B9] {len(rbac)} RBAC object(s): {sorted(rbac)}")
+    assert {("Role", "preflight"), ("Role", "envoy-gateway-probe")} <= set(rbac), rbac
+    assert not [r for r in rbac if r[0] in CLUSTER_RBAC_KINDS], rbac
+
+
+def test_the_operators_layer_stays_out(working_tree: Path) -> None:
+    """`operators.create` false: no CRD, no Argo CD object, no bundled Prometheus."""
+    rendered = [d for d in parent_render(working_tree) if isinstance(d, dict)]
+    offending = [
+        (d["apiVersion"], d["kind"], d["metadata"]["name"])
+        for d in rendered
+        if api_group(d["apiVersion"]) in OPERATOR_API_GROUPS
+        or d["kind"] in OPERATOR_KINDS
+        or d["metadata"]["name"].startswith("prometheus")
+    ]
+    print(f"[B9] {len(rendered)} object(s) examined, {len(offending)} operator object(s)")
+    assert len(rendered) > 0
+    assert not offending, offending
+
+
+def test_a_pinned_nodeport_on_the_probe_envoyproxy_reddens(working_tree: Path) -> None:
+    """Red case: the probe's own EnvoyProxy given `edge`'s 30443 patch is named."""
+    rendered = parent_render(working_tree)
+    job = next(
+        d for d in rendered
+        if isinstance(d, dict) and d.get("kind") == "Job" and d["metadata"]["name"] == "envoy-gateway-probe"
+    )
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    clean = container["args"][0]
+    assert envoyproxy_body_of_the_probe(clean), "no EnvoyProxy body found in the probe script"
+    pinned = clean.replace(
+        '"envoyService":{"type":"NodePort"}',
+        '"envoyService":{"type":"NodePort","patch":{"type":"StrategicMerge",'
+        '"value":{"spec":{"ports":[{"port":443,"nodePort":30443}]}}}}',
+    )
+    assert pinned != clean, "the probe's envoyService shape moved; update this red case"
+    container["args"][0] = pinned
+    problems = probe_violations(rendered)
+    assert any("pins a nodePort" in p for p in problems), problems
