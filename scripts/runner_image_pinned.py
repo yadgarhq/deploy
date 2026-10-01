@@ -193,7 +193,7 @@ def scalars(node, path=(), offset=0):
     starts on the next line, and PyYAML preserves every content line — comments
     inside a block scalar are literal text — so an inner 0-based line `i` is
     outer 0-based `header + 1 + i`. Verified against
-    `infra/estate-front-runner.yaml`, whose runner image reports line 274.
+    `infra/estate-front-runner.yaml`, whose runner image reports line 278.
     """
     if isinstance(node, yaml.MappingNode):
         for key, value in node.value:

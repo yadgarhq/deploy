@@ -1257,6 +1257,90 @@ def test_a_restored_operator_application_under_another_filename_reddens(tmp_path
     assert operator_applications_still_here(tree) == ["keda"]
 
 
+# ── RETIRING `infra` (K4 13 -> 12, ADR-0824): THE FIVE CHILDREN GUARD
+# THEMSELVES ─────────────────────────────────────────────────────────────────
+# The same move E1 made for the six operators, now for the five Applications
+# `infra/apps.yaml` still declares beside itself. A later merge deletes these
+# five files so that `yadgarhq/argocd`'s `root` can adopt the live objects by
+# name, and after that `infra` lists no resource but itself and is deleted by
+# hand (E5, `--cascade=false`). `infra` runs `automated.prune: true`, so
+# without this annotation landed one merge ahead, that deletion would prune
+# the five live `Application` OBJECTS — `yadgar` among them — before `root`
+# could adopt them, costing each its uid. None carries a finalizer (measured
+# 2026-10-01 on `kind-yadgar`), so the workloads would survive. The names
+# would not change, but each Application object would be re-identified
+# (tracking-id and uid) when `root` recreated it.
+#
+# `infra` ITSELF IS EXCLUDED. It declares itself in `infra/apps.yaml`, and
+# leaves by a hand delete rather than by a prune, so `Prune=false` on it would
+# guard nothing and would only make a later self-prune silently skip.
+INFRA_CHILDREN_HANDOVER: tuple[str, ...] = (
+    "arc",
+    "estate-front",
+    "estate-front-runner",
+    "tls",
+    "yadgar",
+)
+
+SYNC_OPTIONS = "argocd.argoproj.io/sync-options"
+
+
+def infra_children_sync_options(tree: Path) -> dict[str, str]:
+    """Each `INFRA_CHILDREN_HANDOVER` name's OWN `sync-options` annotation, read off `infra/*.yaml`."""
+    found: dict[str, str] = {}
+    for _, application in applications(tree):
+        metadata = application.get("metadata") or {}
+        name = metadata.get("name")
+        if name not in INFRA_CHILDREN_HANDOVER:
+            continue
+        found[name] = str((metadata.get("annotations") or {}).get(SYNC_OPTIONS, ""))
+    return found
+
+
+def unguarded_infra_children(tree: Path) -> list[str]:
+    """Every `INFRA_CHILDREN_HANDOVER` name whose own Application is missing `Prune=false`."""
+    options = infra_children_sync_options(tree)
+    return [
+        name
+        for name in INFRA_CHILDREN_HANDOVER
+        if PRUNE_FALSE not in [o.strip() for o in options.get(name, "").split(",")]
+    ]
+
+
+def test_every_infra_child_application_carries_prune_false(working_tree: Path) -> None:
+    """The five children `infra` still declares each carry `Prune=false` on their own metadata."""
+    options = infra_children_sync_options(working_tree)
+    print(f"[infra retire] {len(options)} of {len(INFRA_CHILDREN_HANDOVER)} child Application(s) read: {options}")
+    assert sorted(options) == sorted(INFRA_CHILDREN_HANDOVER), sorted(options)
+    assert unguarded_infra_children(working_tree) == []
+
+
+def test_the_infra_root_does_not_carry_prune_false(working_tree: Path) -> None:
+    """`infra` carries NO `sync-options` annotation at all, `Prune=false` or any other.
+
+    `infra` leaves by a hand delete, so the guard is on its children, never on
+    itself. Any `sync-options` value on `infra` fails this test, not only
+    `Prune=false`.
+    """
+    for _, application in applications(working_tree):
+        metadata = application.get("metadata") or {}
+        if metadata.get("name") == "infra":
+            assert SYNC_OPTIONS not in (metadata.get("annotations") or {})
+            return
+    pytest.fail("infra/apps.yaml declares no `infra` Application")
+
+
+def test_a_child_without_prune_false_reddens(tmp_path: Path) -> None:
+    """Red case: strip the annotation from `yadgar`; the gate names it and only it."""
+    tree = a_copy_of_the_tree(tmp_path)
+    path = tree / "infra" / "yadgar-app.yaml"
+    text = path.read_text()
+    line = f"    {SYNC_OPTIONS}: {PRUNE_FALSE}\n"
+    assert line in text
+    path.write_text(text.replace(line, ""))
+    assert unguarded_infra_children(tree) == ["yadgar"]
+
+
 # ── STEP 9: THE RETIRED `bootstrap` APPLICATION, FOR THE RED CASES ───────────
 # Only what the gate reads, for the reason the valkey constants above give.
 RESTORED_BOOTSTRAP_APPLICATION = """

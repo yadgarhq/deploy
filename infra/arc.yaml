@@ -70,6 +70,10 @@ metadata:
     # lands at -5, because a custom resource applied before its definition
     # exists is a hard sync failure rather than something Argo retries.
     argocd.argoproj.io/sync-wave: "-10"
+    # Retiring `infra` (K4 13 -> 12, ADR-0824): guards this Application object
+    # itself from `infra`'s prune when its file leaves this repository, so
+    # yadgarhq/argocd's root can adopt it by name with the same uid.
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   project: default
   source:
