@@ -4,6 +4,20 @@ Commands for a human to run. Nothing here is applied automatically: each step
 either handles a private key or mutates cluster state, and both are decisions
 rather than side effects.
 
+**On `infra/` paths named below.** The `infra` retirement (ADR-0828) ran M1
+through M5, ending with M5 (this PR) deleting `infra/apps.yaml`, `infra/tls/`,
+`infra/estate-front/`, `infra/yadgar/values.yaml` and
+`scripts/policy_sources_named.py` from this repository; see the "Retiring
+`infra`" sections near the end of this document for the full ladder. Every
+section above that names an `infra/` path is historical/runbook content,
+describing a step as it stood at the time it was written — most of those
+paths were already gone before M5, and the rest left with it. Sections that
+`yadgarhq/argocd` cites by name (e.g. "The development TLS edge", "The
+`estate-front` runner", "Move the development domain to `yadgar.internal`")
+stay in place rather than move, deliberately: they are the runbook a human
+still reads to operate the cluster, and `yadgarhq/argocd`'s own comments point
+here for them.
+
 ## A first sync needs no step from this document, because `make bootstrap` takes it
 
 **`make bootstrap` now depends on `make secrets`, which loads both hand-held
@@ -3089,3 +3103,114 @@ The five files come back, `infra` declares them again and reads `Synced`.
 After `argocd`'s merge has landed, do NOT revert this merge: `infra` and
 `root` would both declare the five and fight over each tracking-id. Revert
 `argocd`'s merge first, and read its own rollback note before doing so.
+
+## Retiring `infra`, M4 — delete `infra` by hand (NEEDS-MAX, ADR-0824, ADR-0828, K4 13 -> 13 then back to 13)
+
+**Not a GitOps change, and not a PR.** `infra` leaves by a hand delete, never
+by a prune — merge 2 (above) said so and this is that delete. After merge 2,
+`infra` declared only itself; after `yadgarhq/argocd`'s merge 3
+(`argocd#54`) adopted the five children by name, `infra`'s own tracking-id was
+the only thing left pointing at it, and nothing in git declared `infra`
+needing a prune (an `Application` does not prune itself).
+
+**What ran, on 2026-10-01, after `argocd#54` had landed and every child's
+tracking-id read `root:…` (verified first, per merge 2's warning above):**
+
+```bash
+kubectl --context kind-yadgar -n argocd delete application infra
+```
+
+`infra` carried no finalizer, so this was a non-cascading delete of `infra`
+alone — the five children, already owned by `root`, were untouched by it.
+
+**Read-only, confirmed by the orchestrator on 2026-10-01, after the delete:**
+
+```bash
+kubectl --context kind-yadgar -n argocd get application infra
+# Error from server (NotFound): applications.argoproj.io "infra" not found
+
+kubectl --context kind-yadgar -n argocd get applications --no-headers | wc -l
+# 13 — down from 14 (the five children plus infra, minus infra)
+
+kubectl --context kind-yadgar -n argocd get applications -o json \
+  | jq -r '..|.repoURL? // empty' | sort -u | grep deploy || echo "no live source reads yadgarhq/deploy"
+# no live `.spec.source`/`.spec.sources` reads yadgarhq/deploy; only
+# `.status.history[]`/`.status.operationState.syncResult` on estate-front,
+# tls and yadgar still name it — sync HISTORY from before M3's cutover,
+# not a live read, and expected to age out on its own
+```
+
+K6 unchanged at 52 CRDs, hash `a8026323ea9d31c2` — the same as every checkpoint
+in this ladder, because deleting an `Application` object touches no CRD.
+
+**Rollback:** not applicable. `infra`'s manifest left git at merge 2; there is
+nothing left to revert that would recreate the object, and recreating it by
+hand would immediately `OutOfSync` against nothing (its own source, `infra/`,
+no longer declares a child). If `infra` is needed again, it is a fresh design,
+not a rollback.
+
+## Retiring `infra`, M5 — delete `infra`'s remnants from this repository (ADR-0828, this PR)
+
+**What this merge does.** `infra` the live object is already gone (M4). This
+merge deletes what it left behind in `deploy` itself: `infra/apps.yaml` (the
+`infra` Application manifest — nothing live reads it any more), `infra/tls/`
+and `infra/estate-front/` (the manifests the `tls` and `estate-front`
+Applications sourced here, byte-identical copies already adopted into
+`yadgarhq/argocd`'s `manifests/tls/` and `manifests/estate-front/` at M3),
+`infra/yadgar/values.yaml` (the `yadgar` Application's values, inlined as
+`valuesObject` in `yadgarhq/argocd`'s `applications/yadgar.yaml` per
+ADR-0828 §2), and `scripts/policy_sources_named.py` with its
+`policy-sources-named` pre-commit hook (ported to `yadgarhq/argocd` at M3,
+which carries the gate forward over its own `manifests/`). `infra/` holds
+nothing after this merge and is not recreated.
+
+`make bootstrap`'s `kubectl apply -f infra/apps.yaml` line is deleted too —
+left in place, a fresh `make bootstrap` would recreate the `infra` Application
+M4 deleted by hand. `yadgarhq/argocd`'s `root` already declares every
+Application this organisation runs, so `kubectl apply -f
+$(ARGOCD_REPO)/projects/root.yaml` is the whole of what a fresh bootstrap
+needs.
+
+`scripts/tests/test_infra_children_handed_over.py` — merge 2's own gate, "no
+`INFRA_CHILDREN_HANDOVER` name declared under `infra/`" — is replaced by
+`scripts/tests/test_infra_retired.py`: "no Application manifest of any name
+declared under `infra/`", because `infra` itself is now one of the retired
+names. The `scripts-tests` pre-commit hook that runs it is unchanged.
+
+**Read-only, before this merge, confirmed by the orchestrator on 2026-10-01**
+(`--context kind-yadgar` — this host's default context is a production
+cluster):
+
+```bash
+kubectl --context kind-yadgar -n argocd get applications -o json \
+  | jq -r '..|.repoURL? // empty' | sort -u
+```
+
+13 Applications, all under `root`. No `.spec.source`/`.spec.sources` on any of
+them names `yadgarhq/deploy` — only stale `.status.history[]` entries on
+`estate-front`, `tls` and `yadgar`, predating M3's cutover, do.
+
+**After this merge — nothing on the cluster changes, because nothing here was
+ever a live source for anything after M4.** This merge touches git only:
+`infra/` is gone, `scripts/policy_sources_named.py` is gone, and `make
+bootstrap` no longer applies `infra/apps.yaml`. The checks that matter are the
+repository's own:
+
+```bash
+test ! -e infra && echo "infra/ is gone"
+grep -c 'infra/apps.yaml' Makefile || echo "0 — make bootstrap no longer applies it"
+python -m pytest scripts/tests -q
+pre-commit run --all-files
+```
+
+**Rollback:** revert this merge. `infra/apps.yaml`, `infra/tls/`,
+`infra/estate-front/`, `infra/yadgar/values.yaml` and
+`scripts/policy_sources_named.py` come back, none of them pointed at by
+anything live — reverting changes no cluster state, because M5 never did
+either. The `infra` **Application object** does not come back; that was M4,
+and M4 has no PR to revert.
+
+**This closes the `infra` retirement.** M1 `deploy#79`, M2 `deploy#80`, M3
+`argocd#54`, M4 the hand delete above (2026-10-01, no PR), M5 this PR. Every
+Application this organisation runs is now declared in `yadgarhq/argocd` alone
+(ADR-0828 §1).
