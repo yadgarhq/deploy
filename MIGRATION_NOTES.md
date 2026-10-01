@@ -2672,26 +2672,28 @@ organisation's values:
   the same four `envoy-gateway-probe` (PostSync).
 - So `gateway` rolls. No other pod rolls.
 
-**THE GATE THE PLAN NAMES IS NOT MET.** B9 waits on B8's record of the probe's
-DELETE and of the dry-run POST with `pretty=false` on a scratch cluster. B8 has
-not run. So the first PreSync on this cluster is the first live run of those
-request shapes. The least-proven arm is mariadb-operator: it needs the webhook
-of operator 26.6.0 to answer with the text
-`either storage size or volumeClaimTemplate must be provided`.
+**WHAT B8 PROVED, AND WHAT IT DID NOT.** B8 ran on 2026-10-01 at parent
+v0.3.12 and v0.3.13, on a fresh install. All four `preflight` arms passed,
+the mariadb-operator dry run and Prometheus included, and so did the
+`envoy-gateway-probe`. B8 recorded the cleanup for `Secret/preflight-probe`
+only. So two things run here for the first time: the UPGRADE path of this
+cluster, and the full cleanup record, which step 4 below reads.
 
-**THIS APPLICATION HAS NO `syncPolicy.retry`.** The adopter example
-(`chart/example/application.yaml` at 0.3.13) carries `limit: 6`, `15s`, factor
-2, `5m`. Without it, a failed probe leaves the sync Failed at this commit.
-Argo does not re-sync the same commit by itself. Recovery is a manual sync
-after the cause is fixed, or a revert.
+**A FAILED HOOK IS RETRIED, BUT NOT FOR EVER.** This Application sets no
+`syncPolicy.retry`. Argo 3.1.8 then gives an automated sync its default retry,
+`limit: 5`. So a failed sync is retried up to 5 times with Argo's default
+backoff. A persistent failure then holds at that commit until a manual sync, a
+new commit, or a revert.
 
-**Do not merge between 06:00 and 07:00 UTC.** The KEDA probe's ScaledObject has
-a cron trigger for that hour with `desiredReplicas: 1`. In that hour KEDA can
-scale `Deployment/preflight-probe` to one pod, which crashes, until the probe
-deletes it.
+**For information only, not a control: the KEDA probe's 06:00–07:00 UTC
+window.** The probe's ScaledObject has a cron trigger for that hour with
+`desiredReplicas: 1`. A sync in that hour can let KEDA scale
+`Deployment/preflight-probe` to one pod, which crashes, until the probe deletes
+it a few seconds later.
 
-**Every `kubectl` below names `--context kind-yadgar`.** This host's default
-context is a production cluster.
+**Every `kubectl` below names `--context kind-yadgar`, and every `argocd` names
+`--core --kube-context kind-yadgar`.** This host's default context is a
+production cluster.
 
 ```bash
 # BEFORE THE MERGE — the baseline. Keep the output.
@@ -2722,6 +2724,8 @@ kubectl --context kind-yadgar -n yadgar logs job/envoy-gateway-probe
 
 # 4. The probes cleaned up. Expect no output from either command. The two
 #    completed Jobs and their RBAC stay; that is `before-hook-creation`.
+#    Deletes finish asynchronously: if a line prints, re-run after ~30s before
+#    treating the output as a leak.
 kubectl --context kind-yadgar -n yadgar get issuer,certificate,secret,deployment,scaledobject,gateway,envoyproxy \
   --ignore-not-found | grep -E 'preflight-probe|envoy-gateway-probe'
 kubectl --context kind-yadgar -n envoy-gateway-system get deploy,svc --ignore-not-found \
@@ -2741,7 +2745,8 @@ kubectl --context kind-yadgar -n envoy-gateway-system get svc \
 
 # 7. The edge still serves. Expect HTTP 405 and ssl_verify_result=0.
 curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' \
-  --cacert <yadgar-dev-ca tls.crt> \
+  --cacert <(kubectl --context kind-yadgar -n cert-manager get secret yadgar-dev-ca \
+    -o jsonpath='{.data.tls\.crt}' | base64 -d) \
   --resolve gateway.yadgar.internal:18443:127.0.0.1 https://gateway.yadgar.internal:18443/
 ```
 
@@ -2752,7 +2757,8 @@ the apply, so the new `gateway` is already running.
 
 **Rollback:** revert this merge. The revert renders no probe and pins `0.3.7`
 again, so `gateway` rolls back. If a sync operation is stuck on a hook, Max runs
-`argocd app terminate-op yadgar` before the revert syncs. The completed probe
+`argocd app terminate-op yadgar --core --kube-context kind-yadgar` before the
+revert syncs. The completed probe
 Jobs and their RBAC stay, because Argo does not prune hooks. Delete them by
 hand if they must go:
 

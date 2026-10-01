@@ -1851,6 +1851,12 @@ def envoyproxy_of_the_probe(script: str) -> str:
     return resolved.pop() if len(resolved) == 1 else f"<{sorted(resolved)}>"
 
 
+def envoyproxy_body_of_the_probe(script: str) -> str:
+    """The JSON the probe POSTs as its own EnvoyProxy, or "" when it posts none."""
+    found = re.search(r"envoyproxy_body=\$\(cat <<JSON\n(.*?)\nJSON", script, re.DOTALL)
+    return found.group(1) if found else ""
+
+
 def probe_violations(documents: list) -> list[str]:
     """Why this render's probes would fail on this cluster, or nothing. Each names the cause."""
     problems = []
@@ -1861,6 +1867,10 @@ def probe_violations(documents: list) -> list[str]:
         problems.append(
             "envoy-gateway-probe does not run on its own EnvoyProxy; on `edge`'s it asks for nodePort 30443"
         )
+    elif "nodePort" in envoyproxy_body_of_the_probe(probe):
+        # ITS OWN ENVOYPROXY IS NOT ENOUGH: a body that copied `edge`'s Service
+        # patch would ask for 30443 all the same (ledger 1189).
+        problems.append("envoy-gateway-probe's own EnvoyProxy pins a nodePort; `edge` holds 30443")
     preflight = job_script(documents, "preflight")
     declared = re.findall(r'^PROBES="([^"]*)"', preflight, re.MULTILINE)
     if declared != [" ".join(PREFLIGHT_PROBES)]:
@@ -1955,3 +1965,24 @@ def test_the_operators_layer_stays_out(working_tree: Path) -> None:
     print(f"[B9] {len(rendered)} object(s) examined, {len(offending)} operator object(s)")
     assert len(rendered) > 0
     assert not offending, offending
+
+
+def test_a_pinned_nodeport_on_the_probe_envoyproxy_reddens(working_tree: Path) -> None:
+    """Red case: the probe's own EnvoyProxy given `edge`'s 30443 patch is named."""
+    rendered = parent_render(working_tree)
+    job = next(
+        d for d in rendered
+        if isinstance(d, dict) and d.get("kind") == "Job" and d["metadata"]["name"] == "envoy-gateway-probe"
+    )
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    clean = container["args"][0]
+    assert envoyproxy_body_of_the_probe(clean), "no EnvoyProxy body found in the probe script"
+    pinned = clean.replace(
+        '"envoyService":{"type":"NodePort"}',
+        '"envoyService":{"type":"NodePort","patch":{"type":"StrategicMerge",'
+        '"value":{"spec":{"ports":[{"port":443,"nodePort":30443}]}}}}',
+    )
+    assert pinned != clean, "the probe's envoyService shape moved; update this red case"
+    container["args"][0] = pinned
+    problems = probe_violations(rendered)
+    assert any("pins a nodePort" in p for p in problems), problems

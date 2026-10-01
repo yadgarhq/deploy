@@ -405,8 +405,9 @@ platform:
   # `Job/envoy-gateway-probe` creates its own EnvoyProxy and Gateway in this
   # namespace (two Envoy pods on the control-plane node, as `edge` has),
   # waits up to 300s for `Programmed`, then deletes both. Every probe's RBAC is
-  # a namespaced `Role`. A failed PreSync Job fails the sync, and this
-  # Application carries no `retry`, so a red probe holds the estate at its
-  # last good sync until the cause is fixed or this line is reverted.
+  # a namespaced `Role`. A failed PreSync Job fails the sync. With no
+  # `syncPolicy.retry` on this Application, Argo's automated sync retries it up
+  # to 5 times with Argo's default backoff; a persistent failure then holds at
+  # that commit until a manual sync, a new commit, or a revert.
   preflight:
     enabled: true
