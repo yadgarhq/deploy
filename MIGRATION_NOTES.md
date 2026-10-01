@@ -2961,3 +2961,63 @@ back with `Prune=false`, `infra` declares them again and reads `Synced`. After
 E3 has merged, do NOT revert this merge: `infra` and `root` would both declare
 the six and fight over each tracking-id. Revert E3 first, and read E3's own
 rollback note before doing so.
+
+## Retiring `infra`, merge 1 — guard its five children from `infra`'s prune (ADR-0824, K4 13 -> 12)
+
+**What the merge does.** It adds `argocd.argoproj.io/sync-options: Prune=false`
+to the OWN `metadata` of the five Applications `infra/apps.yaml` still
+declares beside itself: `arc`, `estate-front`, `estate-front-runner`, `tls`
+and `yadgar`. No `spec` field changes, so no child re-renders. `infra` itself
+gets no annotation: it leaves by a hand delete, not by a prune.
+
+**Why.** The next `deploy` merge deletes these five files so that
+`yadgarhq/argocd`'s `root` can adopt the live objects by name (the E2/E3
+pattern of `#77` and `argocd#42`). `infra` runs `automated.prune: true`.
+Without this annotation one merge ahead, that deletion would prune the five
+live `Application` objects and cost each its uid.
+
+**Read-only, BEFORE this merge, on 2026-10-01** (`--context kind-yadgar` on
+every line — this host's default context is a production cluster). None of
+the five carried a `sync-options` annotation or a finalizer. `infra` was
+`Synced`/`Healthy` at `ac9903158f290c10feed4b92c9ca1a4c8cc73da1`. K4 = 13.
+K6 = 52 CRDs, sorted name=uid hash `a8026323ea9d31c2`.
+
+| Application           | uid                                    |
+| --------------------- | -------------------------------------- |
+| `arc`                 | `ff9e2c3a-52ec-41ed-a32f-8138f29f86c3` |
+| `estate-front`        | `521f859e-f888-4c4f-95dc-48728acf11ab` |
+| `estate-front-runner` | `4414811c-f7c9-47b3-b86e-b47a287cfdba` |
+| `tls`                 | `89f9542e-34ae-4d01-9a76-41c7dd58bcf0` |
+| `yadgar`              | `6181bd1c-3d73-4316-a864-b4e188dc6460` |
+| `infra`               | `218adab6-42a4-430a-8a5a-fbe94079c0d0` |
+
+**After this merge, confirm the annotation landed without disturbing anything
+else.** Expect `Prune=false` on each child line, every uid UNCHANGED from the
+table above, and no finalizer:
+
+```bash
+for app in arc estate-front estate-front-runner tls yadgar; do
+  echo "=== $app ==="
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.uid} {.metadata.finalizers}{"\n"}'
+done
+
+# infra re-synced at this merge's sha. Expect Synced/Healthy and the merge commit.
+kubectl --context kind-yadgar -n argocd get application infra \
+  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision}{"\n"}'
+
+# Prune=false also reached each child's last-applied-configuration. The next
+# merge's prune decision reads the live object, but E2 checked this too. Expect
+# `<name>: Prune=false` on all five lines; a line with nothing after the colon
+# means STOP before the deletion merge.
+for app in arc estate-front estate-front-runner tls yadgar; do
+  printf '%s: ' "$app"
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' \
+    | grep -o 'Prune=false' || echo
+done
+```
+
+**Rollback:** revert this merge. The revert removes the annotation and
+changes nothing else. It is safe only while the next merge (the deletion of
+the five files) has not run.
