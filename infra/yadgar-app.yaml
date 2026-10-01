@@ -64,7 +64,45 @@ spec:
     - repoURL: ghcr.io/yadgarhq/charts
       chart: yadgar
       # PINNED BY HAND, ONE LINE PER PULL REQUEST, AND NOTHING WRITES IT.
-      # Measured 2026-09-27 on the pulled artifact
+      #
+      # `0.3.13` IS B9 of `plans/the-one-application-install.md`, and the pin
+      # and `platform.preflight.enabled` move in ONE merge. Measured 2026-10-01
+      # on the pulled artifact (digest
+      # sha256:ee35781ad485b94f58ce114b739cff56bd2cd69ac858750c52b366829704eccb):
+      # against `0.3.7` two pins moved — gateway 0.9.53 → 0.9.54 and platform
+      # 0.1.19 → 0.1.21. `push_validation` for the tag's commit `48cdae3` is
+      # `success` on its `main` push run (36830194167).
+      #
+      # 0.3.10 OR LATER IS REQUIRED, NOT MERELY THE NEWEST. `platform` 0.1.20
+      # (first pinned by parent 0.3.9) runs the post-install Envoy Gateway
+      # probe on its OWN EnvoyProxy; at 0.1.19 the probe Gateway inherited the
+      # edge's pinned nodePort 30443, which `edge` holds, and the API server
+      # refuses a second Service asking for it (ledger 1189). It also deletes
+      # the probe's `preflight-probe` Secret (ledger 1193). `platform` 0.1.21
+      # (first pinned by 0.3.10) adds the Prometheus arm, which asks
+      # `prometheus-server.observability` — the address every module
+      # ScaledObject here already queries.
+      #
+      # K3 OF THE PIN ALONE, values unchanged on both sides, the six
+      # `--api-versions` the gate uses: 80 objects on both sides, 79
+      # byte-identical, one field changed — the image digest of
+      # `Deployment/gateway` (a29dae79… → a9c1ad6b…). Unlike the 0.3.7 bump
+      # this is NOT a rebuild of unchanged source: gateway 0.9.54 is gateway#96,
+      # which serves `edit_task` and `transition_task` over MCP against RPCs
+      # `task` 0.5.30 already implements. `platform` 0.1.20 and 0.1.21 change
+      # nothing while `preflight.enabled` is false. So the pin alone rolls
+      # `gateway` and nothing else.
+      #
+      # K3 OF THE FLIP, at 0.3.13: `preflight.enabled: true` adds exactly eight
+      # hook objects — `ServiceAccount`, `Role`, `RoleBinding` and `Job`
+      # `preflight` (`pre-install,pre-upgrade`, which Argo runs as PreSync) and
+      # the same four `envoy-gateway-probe` (`post-install,post-upgrade`, run
+      # as PostSync) — and changes 0 fields in the other 80. No Deployment
+      # other than `gateway` rolls. Both are encoded in
+      # `scripts/tests/test_no_two_owners.py`.
+      #
+      # THE HISTORY OF EARLIER PINS, KEPT. `0.3.7`, measured 2026-09-27 on the
+      # pulled artifact
       # (digest sha256:a26bf1dff34f7597b8d17957f2241d84c0bff0e61f736a0a30392a13163471be):
       # `0.3.7` pins gateway 0.9.53, iam 0.8.45, iam-db 0.7.46, project 0.1.19,
       # project-db 0.3.10, task 0.5.30, task-db 0.6.34, config 0.2.0 and
@@ -85,9 +123,8 @@ spec:
       # and iam#87), so each image is a rebuild of unchanged source. The parent's
       # own whole-estate defaults (ADR-0803 B6) change nothing here, because
       # the values file states every key it relies on.
-      # `test_the_repin_changes_only_what_k3_measured` encodes this.
       #
-      # SO THIS SYNC ROLLS `gateway` AND `iam` AND NOTHING ELSE (two replicas
+      # SO THAT SYNC ROLLED `gateway` AND `iam` AND NOTHING ELSE (two replicas
       # each, `maxSurge: 1`, `maxUnavailable: 0`). `NATS_URL` stays
       # `nats://nats:4222`, and `nats-0` is Ready and not touched by this sync,
       # so a new `iam` pod's single boot dial finds a broker: the B5 latch
@@ -133,7 +170,7 @@ spec:
       # `storage.className`. The values file's three `className: standard` lines
       # are meaningless against a parent without them. All three `-db` pins are
       # unchanged at `0.3.7`, so that property holds here too.
-      targetRevision: 0.3.7
+      targetRevision: 0.3.13
       helm:
         valueFiles:
           - $self/infra/yadgar/values.yaml
