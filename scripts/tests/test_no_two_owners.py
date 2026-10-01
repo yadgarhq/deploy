@@ -150,6 +150,11 @@ TARGET_NAMESPACE = "yadgar"
 # `bootstrap-secrets`. The 5 left are `tls`'s four `yadgar-tls-preflight`
 # objects and `ClusterIssuer/yadgar-dev-ca`, which is register row C4's end
 # state. Measured 2026-09-27 at the pinned 0.3.7: 10 before and 5 after.
+#
+# STILL 5 AFTER E2 of the operators handover (ADR-0824), which deletes the six
+# operator Application manifests. Each sourced a CHART into its own namespace,
+# which `deploy_side` never rendered, so none was in D. Measured 2026-10-01: 5
+# before the deletion and 5 after.
 EXPECTED_DEPLOY_TUPLES = 5
 
 # THE `--api-versions` FLAGS, AND EACH NEEDS ITS OWN FLAG. The `-db` charts call
@@ -264,16 +269,17 @@ def deploy_side(tree: Path) -> dict[tuple[str, str, str], str]:
     getting it wrong changes every tuple.
 
     A CHART SOURCE OUTSIDE `yadgar` IS NOT RENDERED, AND THAT IS A STATED LIMIT
-    RATHER THAN AN OVERSIGHT. Eight Applications here install operators into their
-    own namespaces from six registries — `arc`, `cert-manager`, `envoy-gateway`,
-    `estate-front-runner`, `keda`, both `mariadb-operator` charts and
-    `prometheus`. Rendering them would make this gate depend on six registries
-    being reachable to answer a question about one namespace, and it would buy
-    only the CLUSTER-SCOPED half of their output. The plan states as a non-finding
-    that none of them renders a cluster-scoped name either side also holds — the
-    envoy-gateway chart at 1.9.1 creates no GatewayClass, which is measured and is
-    why `infra/tls/gatewayclass.yaml` exists at all. So this is a latent gap in the
-    gate's reach, not a live defect, and the day an operator chart starts rendering
+    RATHER THAN AN OVERSIGHT. Two Applications here install charts into their own
+    namespaces — `arc` and `estate-front-runner`. Until E2 of the operators
+    handover (ADR-0824) six more did — `cert-manager`, `envoy-gateway`, `keda`,
+    both `mariadb-operator` charts and `prometheus` — and those now live in
+    `yadgarhq/argocd`. Rendering them would make this gate depend on their
+    registries being reachable to answer a question about one namespace, and it
+    would buy only the CLUSTER-SCOPED half of their output. The plan states as a
+    non-finding that none of them renders a cluster-scoped name either side also
+    holds — the envoy-gateway chart at 1.9.1 creates no GatewayClass, which is
+    measured and is why `infra/tls/gatewayclass.yaml` exists at all. So this is
+    a latent gap in the gate's reach, not a live defect, and the day an operator chart starts rendering
     such a name it is this paragraph that has to change rather than a number.
 
     DIRECTORY SOURCES ARE ALWAYS READ, wherever they install, because reading a
@@ -1145,31 +1151,31 @@ def test_a_tracked_handover_without_the_annotation_reddens(tmp_path: Path) -> No
     ], missing
 
 
-# ── E1 OF THE OPERATORS HANDOVER (ADR-0824): THE APPLICATION OBJECTS GUARD
-# THEMSELVES, NOT THEIR SOURCED OBJECTS ──────────────────────────────────────
+# ── E2 OF THE OPERATORS HANDOVER (ADR-0824): THE SIX APPLICATIONS ARE HANDED
+# OVER, SO NONE OF THEM IS DECLARED HERE ANY MORE ────────────────────────────
 # ADR-0824 keeps each operator as today's own Argo `Application` — named and
 # namespaced exactly as now — and has `yadgarhq/argocd`'s root adopt it by
-# TRACKING-ID rather than reinstall it. `infra/apps.yaml` (this repository's
-# own app-of-apps) prunes anything its render of `infra/*.yaml` stops listing
-# (`syncPolicy.automated.prune: true`), and E2 deletes these six files one
-# merge AFTER this one. Without a guard, E2 would prune the live `Application`
-# OBJECTS themselves — not merely their rendered resources — before argocd's
-# root ever gets to adopt them by tracking-id at E3, costing each one its uid.
+# TRACKING-ID rather than reinstall it. E1 (`deploy#76`) put
+# `argocd.argoproj.io/sync-options: Prune=false` on each Application's OWN
+# `metadata`, so that `infra` (`infra/apps.yaml`, `automated.prune: true`)
+# cannot prune the live `Application` objects when their files leave. E2 is
+# that leaving: the six `infra/<name>.yaml` manifests are deleted, and the live
+# objects keep running, unowned, until E3 lands the same specs under
+# `yadgarhq/argocd`'s `applications/` and root adopts them by name.
 #
-# `argocd.argoproj.io/sync-options: Prune=false` lands here, at E1, on each
-# Application's OWN `metadata.annotations` — the thing `infra` would otherwise
-# prune — one merge ahead of E2, the same shape `deploy#68` and `deploy#70`
-# used for a same-name object handed from one Application to another (see the
-# module docstring's NEXT HANDOVER section above).
+# THE GATE FLIPS FROM "GUARDED" TO "HANDED OVER". Before E2 the failure was an
+# operator Application here WITHOUT the annotation. From E2 the failure is ANY
+# operator Application here at all: a restored copy would make `infra` and
+# argocd's `root` both declare the same object, and after E3 the two would
+# overwrite each other's tracking-id on every sync. The name, not the file, is
+# what is read, so a copy restored under a different filename is still caught.
 #
-# THIS IS A DIFFERENT GATE FROM `unguarded_handovers` ABOVE, NOT A REUSE OF
-# IT. That function reads the OBJECTS a path-sourced Application hands over,
-# globbing `spec.source.path`; these six source a Helm CHART
-# (`spec.source.chart`), carry no `path` at all, and what is being handed
-# over is the `Application` document itself. Measured 2026-10-01 against the
-# live cluster (`kubectl -n argocd get application <name> -o jsonpath=...`):
-# all six exist, none carries a `sync-options` annotation yet, and none
-# carries a finalizer.
+# THE CENSUS BESIDE IT. `infra/*.yaml` declared twelve Applications before E2
+# and declares six after it. The census is the set of names, not a count, so
+# a deletion that removed the wrong file reddens with the name it removed.
+# Deleting these six moves `EXPECTED_DEPLOY_TUPLES` by ZERO: each sources a
+# CHART into a namespace other than `yadgar`, which `deploy_side` does not
+# render (its docstring says why), so none of them was ever in D.
 OPERATOR_HANDOVER: tuple[str, ...] = (
     "cert-manager",
     "keda",
@@ -1179,53 +1185,76 @@ OPERATOR_HANDOVER: tuple[str, ...] = (
     "prometheus",
 )
 
+EXPECTED_INFRA_APPLICATIONS = frozenset(
+    {"infra", "arc", "estate-front", "estate-front-runner", "tls", "yadgar"}
+)
 
-def operator_application_sync_options(tree: Path) -> dict[str, str]:
-    """Each `OPERATOR_HANDOVER` name's OWN `sync-options` annotation, read off `infra/<name>.yaml`."""
-    found: dict[str, str] = {}
-    for _, application in applications(tree):
-        name = (application.get("metadata") or {}).get("name")
-        if name not in OPERATOR_HANDOVER:
-            continue
-        annotations = (application.get("metadata") or {}).get("annotations") or {}
-        found[name] = str(annotations.get("argocd.argoproj.io/sync-options", ""))
-    return found
+# THE SMALLEST APPLICATION THE GATE MUST STILL NAME. Only `metadata.name` is
+# read, so the red case carries nothing more than an Application needs.
+RESTORED_OPERATOR_APPLICATION = """\
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {name}
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.21.1
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+"""
 
 
-def unguarded_operator_handovers(tree: Path) -> list[str]:
-    """Every `OPERATOR_HANDOVER` name whose own Application is missing `Prune=false`."""
-    options = operator_application_sync_options(tree)
+def infra_application_names(tree: Path) -> list[str]:
+    """Every Application name declared directly under `infra/`, in file order."""
     return [
-        name
-        for name in OPERATOR_HANDOVER
-        if PRUNE_FALSE not in [option.strip() for option in options.get(name, "").split(",")]
+        str((application.get("metadata") or {}).get("name"))
+        for _, application in applications(tree)
     ]
 
 
-def test_every_operator_application_guards_itself_before_the_handover(working_tree: Path) -> None:
-    """E1: all six operator Applications carry `Prune=false` on themselves."""
-    found = operator_application_sync_options(working_tree)
-    assert set(found) == set(OPERATOR_HANDOVER), (
-        f"expected infra/*.yaml to carry {sorted(OPERATOR_HANDOVER)}; found {sorted(found)}"
-    )
-    missing = unguarded_operator_handovers(working_tree)
-    assert not missing, f"operator Application(s) without {PRUNE_FALSE}: {missing}"
+def operator_applications_still_here(tree: Path) -> list[str]:
+    """Every `OPERATOR_HANDOVER` name `infra/*.yaml` still declares, in handover order."""
+    names = set(infra_application_names(tree))
+    return [name for name in OPERATOR_HANDOVER if name in names]
 
 
-def test_an_operator_application_without_the_annotation_reddens(tmp_path: Path) -> None:
-    """Red case: drop the annotation from one Application; only that name is named."""
+def test_no_operator_application_is_declared_here_after_the_handover(working_tree: Path) -> None:
+    """E2: none of the six operator Applications is left under `infra/`."""
+    left = operator_applications_still_here(working_tree)
+    print(f"[E2] {len(left)} of {len(OPERATOR_HANDOVER)} operator Application(s) still declared")
+    assert left == [], f"handed to yadgarhq/argocd, still declared under infra/: {left}"
+
+
+def test_infra_declares_exactly_the_applications_left_after_the_handover(working_tree: Path) -> None:
+    """E2 census: the six Application names `infra/*.yaml` keeps, and no other."""
+    names = infra_application_names(working_tree)
+    print(f"[E2] {len(names)} Application(s) under infra/: {sorted(names)}")
+    assert len(names) == len(set(names)), f"a name is declared twice: {sorted(names)}"
+    assert set(names) == EXPECTED_INFRA_APPLICATIONS, sorted(set(names) ^ EXPECTED_INFRA_APPLICATIONS)
+
+
+def test_a_restored_operator_application_reddens(tmp_path: Path) -> None:
+    """Red case: restore one operator Application; the gate names it and only it."""
     tree = a_copy_of_the_tree(tmp_path)
-    path = tree / "infra" / "cert-manager.yaml"
-    text = path.read_text()
-    annotated = (
-        "    # E1 of the operators handover (ADR-0824): guards this Application object\n"
-        "    # itself from `infra`'s prune when its file leaves at E2, so argocd's root\n"
-        "    # can adopt it by tracking-id at E3 with the same uid.\n"
-        "    argocd.argoproj.io/sync-options: Prune=false\n"
+    (tree / "infra" / "cert-manager.yaml").write_text(
+        RESTORED_OPERATOR_APPLICATION.format(name="cert-manager")
     )
-    assert annotated in text, "fixture is stale: cert-manager.yaml no longer carries this block"
-    path.write_text(text.replace(annotated, ""))
-    assert unguarded_operator_handovers(tree) == ["cert-manager"]
+    assert operator_applications_still_here(tree) == ["cert-manager"]
+    assert set(infra_application_names(tree)) - EXPECTED_INFRA_APPLICATIONS == {"cert-manager"}
+
+
+def test_a_restored_operator_application_under_another_filename_reddens(tmp_path: Path) -> None:
+    """Red case: the gate keys on the Application's name, so the filename does not hide it."""
+    tree = a_copy_of_the_tree(tmp_path)
+    (tree / "infra" / "operators-keda.yaml").write_text(
+        RESTORED_OPERATOR_APPLICATION.format(name="keda")
+    )
+    assert operator_applications_still_here(tree) == ["keda"]
 
 
 # ── STEP 9: THE RETIRED `bootstrap` APPLICATION, FOR THE RED CASES ───────────

@@ -2831,3 +2831,133 @@ kubectl --context kind-yadgar -n argocd get application infra \
 **Rollback:** revert this merge. The revert removes the annotation and changes
 nothing else, so `infra` goes back to pruning these six on the ordinary
 app-of-apps rule — safe as long as E2 has not yet run.
+
+## E2 — release the six operator Applications from `infra` (ADR-0824)
+
+**What the merge does.** It deletes six Application manifests:
+`infra/cert-manager.yaml`, `infra/keda.yaml`, `infra/mariadb-operator.yaml`,
+`infra/mariadb-operator-crds.yaml`, `infra/envoy-gateway.yaml` and
+`infra/prometheus.yaml`. Nothing else under `infra/` changes.
+
+**What it does NOT do.** It does not delete the six live `Application`
+objects. E1 (`deploy#76`) put `argocd.argoproj.io/sync-options: Prune=false`
+on each of them, so `infra`'s automated prune skips them. They keep running,
+unowned, until E3 (`yadgarhq/argocd`) declares the same specs under
+`applications/` and `root` adopts them by name.
+
+**ORDERING CONTRACT.** Merge E2 first. Run the checks below. Then merge E3
+promptly. Between the two merges the six Applications are unowned, and only
+`Prune=false` protects them. Do not merge E3 first: `infra` and `root` would
+then both declare the six, and each sync would overwrite the other's
+tracking-id.
+
+**`infra` does NOT read `Synced` in the window, and that is expected.** Argo
+reports a live resource that git no longer declares as needing a prune.
+`Prune=false` stops the prune but does not hide the resource, so `infra` reads
+`OutOfSync` with exactly these six `requiresPruning`. E1 did not add
+`argocd.argoproj.io/compare-options: IgnoreExtraneous`, which is the only
+annotation that hides it. `infra` goes back to `Synced` once E3 has run,
+because `root` then rewrites each tracking-id to `root:…` and `infra` stops
+reading the six as its own. `selfHeal` may re-run `infra`'s sync in the
+window. Each run skips the same six prunes and changes nothing.
+
+### Before this merge — read-only, stop on any mismatch
+
+`--context kind-yadgar` on every line. This host's default context is a
+production cluster.
+
+```bash
+# 1. Each Application: Prune=false present, NO finalizer, uid as in the table,
+#    tracking-id still names `infra`. A finalizer on any one → STOP.
+for app in cert-manager keda mariadb-operator mariadb-operator-crds envoy-gateway prometheus; do
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.name} {.metadata.uid} [{.metadata.finalizers}] {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"}'
+done
+
+# 2. infra Synced/Healthy at the E1 merge sha (or later).
+kubectl --context kind-yadgar -n argocd get application infra \
+  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision}{"\n"}'
+
+# 3. K4: Applications in namespace argocd. Expect 14.
+kubectl --context kind-yadgar -n argocd get applications --no-headers | wc -l
+
+# 4. K6: CRD count and a hash of the sorted name=uid list.
+kubectl --context kind-yadgar get crd --no-headers | wc -l
+kubectl --context kind-yadgar get crd -o json \
+  | jq -r '[.items[]|.metadata.name+"="+.metadata.uid]|sort|join("\n")' | sha256sum | cut -c1-16
+
+# 5. The operators' controllers: uid and generation.
+for d in cert-manager/cert-manager cert-manager/cert-manager-cainjector cert-manager/cert-manager-webhook \
+         keda/keda-admission-webhooks keda/keda-operator keda/keda-operator-metrics-apiserver \
+         mariadb-system/mariadb-operator mariadb-system/mariadb-operator-cert-controller mariadb-system/mariadb-operator-webhook \
+         envoy-gateway-system/envoy-gateway observability/prometheus-server; do
+  kubectl --context kind-yadgar -n "${d%/*}" get deployment "${d#*/}" \
+    -o jsonpath='{.metadata.namespace}/{.metadata.name} {.metadata.uid} {.metadata.generation}{"\n"}'
+done
+```
+
+Measured 2026-10-01, read-only. All six carried `Prune=false`, no finalizer,
+and an `infra:argoproj.io/Application:argocd/<name>` tracking-id:
+
+| Application             | uid                                    |
+| ----------------------- | -------------------------------------- |
+| `cert-manager`          | `803a0a98-29a9-4ef0-b556-3a1a3754a7ea` |
+| `keda`                  | `1ffb7cc6-cb58-4185-90b0-7eb00d854e89` |
+| `mariadb-operator`      | `6e907a55-222c-45b7-8aa4-4ce5a2102bc6` |
+| `mariadb-operator-crds` | `47326d8d-6b64-45c7-92c2-05e170a32631` |
+| `envoy-gateway`         | `c997c5d8-220b-481f-b23f-e01dbbad549d` |
+| `prometheus`            | `97638c3b-9b12-431f-a2f3-4e96f8ae7a7b` |
+
+`infra` read `Synced`/`Healthy` at `fa7ccb529fd12911a7ccca1dc53f10490063f446`.
+K4 read 14. K6 read 52 CRDs, list hash `a8026323ea9d31c2`.
+
+| Deployment                                        | uid                                    | generation |
+| ------------------------------------------------- | -------------------------------------- | ---------- |
+| `cert-manager/cert-manager`                       | `583b3bff-ab96-4e57-a41e-dce5979e2174` | 1          |
+| `cert-manager/cert-manager-cainjector`            | `9caab85d-8c92-4b22-8326-62a91b1760f5` | 1          |
+| `cert-manager/cert-manager-webhook`               | `1cf78881-0462-47d5-95f4-b8e04506861e` | 1          |
+| `keda/keda-admission-webhooks`                    | `6b41a82f-e7b1-40ae-b322-3d66940929f7` | 1          |
+| `keda/keda-operator`                              | `91d86f9a-abdc-43e1-bd20-b7192f05a7b6` | 1          |
+| `keda/keda-operator-metrics-apiserver`            | `07829966-06a5-498f-9107-0518024f5690` | 1          |
+| `mariadb-system/mariadb-operator`                 | `3142a903-b414-4e13-b708-dd86f452f8c4` | 1          |
+| `mariadb-system/mariadb-operator-cert-controller` | `e5243d73-419b-47da-8d52-46e0049e420d` | 1          |
+| `mariadb-system/mariadb-operator-webhook`         | `275d5cdd-cfc0-4a9d-a37a-5ff8557499e2` | 1          |
+| `envoy-gateway-system/envoy-gateway`              | `d2590845-f559-4221-8f70-e240d5d4dae4` | 1          |
+| `observability/prometheus-server`                 | `faf500ee-801c-4dd5-93e0-383c5c237dc9` | 1          |
+
+Re-run all five reads just before the merge. A changed uid, a finalizer, or a
+missing `Prune=false` → STOP and do not merge.
+
+### After this merge — read-only
+
+```bash
+# 1. Each Application still exists with the SAME uid as the table above,
+#    Prune=false still present, tracking-id still `infra:...`, and still
+#    Synced/Healthy itself.
+for app in cert-manager keda mariadb-operator mariadb-operator-crds envoy-gateway prometheus; do
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.name} {.metadata.uid} {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id} {.status.sync.status}/{.status.health.status}{"\n"}'
+done
+
+# 2. infra: Healthy, its last sync operation Succeeded at the merge sha, and
+#    OutOfSync with EXACTLY these six requiring a prune (see above).
+kubectl --context kind-yadgar -n argocd get application infra \
+  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.operationState.phase} {.status.operationState.syncResult.revision}{"\n"}'
+kubectl --context kind-yadgar -n argocd get application infra -o json \
+  | jq -r '.status.resources[] | select(.requiresPruning == true) | "\(.kind)/\(.name)"' | sort
+# expect exactly: Application/cert-manager Application/envoy-gateway Application/keda
+#                 Application/mariadb-operator Application/mariadb-operator-crds
+#                 Application/prometheus
+
+# 3. K4 still 14; K6 still 52 and the same hash; every Deployment uid and
+#    generation as in the table. Re-run reads 3, 4 and 5 from above.
+```
+
+Any uid change, any of the six missing, or any extra `requiresPruning`
+resource → STOP. Do not merge E3, and report.
+
+**Rollback:** revert this merge, but only BEFORE E3 merges. The six files come
+back with `Prune=false`, `infra` declares them again and reads `Synced`. After
+E3 has merged, do NOT revert this merge: `infra` and `root` would both declare
+the six and fight over each tracking-id. Revert E3 first, and read E3's own
+rollback note before doing so.
