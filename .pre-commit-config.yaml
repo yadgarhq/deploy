@@ -61,46 +61,24 @@ repos:
 
   - repo: local
     hooks:
-      # LOCAL, AND FOR A REASON ONE LEVEL UP FROM THE ONE ABOVE. The runner scale set
-      # exists only here, so a definition in yadgarhq/actions would be a hook
-      # that is a no-op in fifteen repositories. What it guards is the one image
-      # reference in this repository naming an artefact this organisation builds
-      # itself, and nothing else in the estate covers it: `versions/` and its
-      # gate live in yadgarhq/argocd and see `yadgar-deployable` modules, which
-      # the runner is not (ledger 742).
-      #
-      # THE STRUCTURAL HALF ONLY. `--verify-signature` needs cosign and a
-      # reachable registry, and it REFUSES rather than skips without them — so
-      # running it here would redden every commit made on a train. That half
-      # runs in the `signature` job of .github/workflows/ci.yaml instead.
-      #
-      # THE ABSENCE OF THE KEY IS THE FAILURE, so the changed-file list cannot
-      # be the input — the same reason yadgarhq/argocd's `versions-pinned` says
-      # so. Delete the `image` value and the chart falls back to its own default
-      # runner image; a hook scoped to `files:` would then be handed a manifest
-      # with nothing to check and would pass.
-      - id: runner-image-pinned
-        name: the ARC runner pod is pinned to a digest CI published (ledger 742)
-        entry: python scripts/runner_image_pinned.py
-        language: python
-        additional_dependencies: ["pyyaml==6.0.3"]
-        always_run: true
-        pass_filenames: false
-
-      # LOCAL FOR THE FIRST OF THE TWO REASONS ABOVE: this repository is the only
-      # one in the estate declaring a `kind: NetworkPolicy` as a plain manifest.
-      # `yadgarhq/platform` asks the same question of its chart, in
+      # LOCAL: this repository is the only one in the estate declaring a
+      # `kind: NetworkPolicy` as a plain manifest. `yadgarhq/platform` asks the
+      # same question of its chart, in
       # `scripts/tests/test_shared_infrastructure.py`, and the matcher functions
       # here are COPIED from there rather than re-derived (ADR-0679) — a second
       # derivation of "what counts as a from-less rule" is a second set of bugs.
       #
-      # THE SAME `always_run` / `pass_filenames: false` PAIR AS THE HOOK ABOVE,
-      # and for the same reason it gives: the absence of the rule is the failure,
-      # so the changed-file list cannot be the input. Deleting a rule's `from`
-      # and deleting the whole policy must both redden, and a hook handed only
-      # what changed cannot see the second. The broker's 8222 rule left with
-      # `nats-ingress` at step 6's first merge; `yadgarhq/platform`'s suite
-      # asserts it where the parent chart now renders it.
+      # `always_run` / `pass_filenames: false`, because the absence of the rule
+      # is the failure, so the changed-file list cannot be the input. Deleting a
+      # rule's `from` and deleting the whole policy must both redden, and a hook
+      # handed only what changed cannot see the second. The broker's 8222 rule
+      # left with `nats-ingress` at step 6's first merge; `yadgarhq/platform`'s
+      # suite asserts it where the parent chart now renders it.
+      #
+      # NO `runner-image-pinned` HOOK HERE ANY MORE. It guarded
+      # `infra/estate-front-runner.yaml`'s image pin (ledger 742), and that
+      # Application is handed to `yadgarhq/argocd` in this merge (ADR-0824);
+      # `argocd` carries the gate's argocd-side copy forward.
       - id: policy-sources-named
         name: every ingress rule names a source
         entry: python scripts/policy_sources_named.py

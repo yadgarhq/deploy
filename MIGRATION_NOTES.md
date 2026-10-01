@@ -2045,90 +2045,16 @@ working as designed — the mounted file is in the watch set, a changed digest e
 the serve, and the pod drains and comes back on the new value. Do not read that
 roll as a fault.
 
-## Make the runner signature check required (ledger 742)
+## Make the runner signature check required (ledger 742) — NOTHING TO RUN
 
-`.github/workflows/ci.yaml` gained a `signature` job. It runs
-`scripts/runner_image_pinned.py --verify-signature`, which asks cosign whether
-the digest in `infra/estate-front-runner.yaml` carries a signature by the
-workflow identity that publishes it. **That job blocks nothing until this step
-is taken**, and saying so is the point of this section: the `main` ruleset
-requires exactly one status check, `ci / passed`, and this job is not inside it.
-A red cross beside a mergeable pull request is a check people learn to ignore.
-
-The structural half — is the reference a digest at all — is already required: it
-is the `runner-image-pinned` pre-commit hook, and `ci / passed` runs every hook
-in `.pre-commit-config.yaml`. Nothing below is needed for that half.
-
-```bash
-# READ FIRST. The API replaces the whole `rules` array, so the payload below has
-# to match what is there. This is what it was on 2026-09-06.
-gh api repos/yadgarhq/deploy/rulesets/21845322 --jq '.rules[] | select(.type=="required_status_checks")'
-
-# THEN, as a repository admin. Adding one context to the existing list.
-gh api --method PUT repos/yadgarhq/deploy/rulesets/21845322 \
-  --input - <<'JSON'
-{
-  "name": "main",
-  "target": "branch",
-  "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
-  "rules": [
-    { "type": "deletion" },
-    { "type": "non_fast_forward" },
-    { "type": "required_linear_history" },
-    {
-      "type": "pull_request",
-      "parameters": {
-        "required_approving_review_count": 0,
-        "dismiss_stale_reviews_on_push": true,
-        "required_reviewers": [],
-        "require_code_owner_review": false,
-        "dismissal_restriction": { "enabled": false, "allowed_actors": [] },
-        "require_last_push_approval": false,
-        "required_review_thread_resolution": true,
-        "require_extra_approval_for_unattributed_changes": true,
-        "allowed_merge_methods": ["squash"]
-      }
-    },
-    {
-      "type": "required_status_checks",
-      "parameters": {
-        "strict_required_status_checks_policy": true,
-        "do_not_enforce_on_create": false,
-        "required_status_checks": [
-          { "context": "ci / passed" },
-          { "context": "signature" }
-        ]
-      }
-    }
-  ]
-}
-JSON
-```
-
-`signature`, not `ci / signature`. The two-part form belongs to a job that calls
-a reusable workflow — `ci / passed` is `<caller job id> / <called job id>` — and
-this job runs its own steps, so its check context is the job id alone. A context
-that names no real check is not an error: the ruleset simply waits for a check
-that never arrives and every pull request stays blocked, which reads like an
-outage rather than a typo.
-
-### What the check refuses, and what it cannot
-
-It refuses a digest with no cosign signature by
-`https://github.com/yadgarhq/actions/.github/workflows/estate-runner-image.yaml@refs/heads/main`
-at `https://token.actions.githubusercontent.com`. That identity was read off the
-live signing certificate rather than inferred from the workflow file. **A
-rename of that workflow file, or a move of the runner build to another
-repository, changes the identity and reddens this job** — the fix is to edit
-`COSIGN_IDENTITY` in the script, deliberately, which is the behaviour wanted
-from an exact identity rather than a regexp.
-
-It cannot tell you the pin is the NEWEST published digest, and that is on
-purpose. `estate-runner` is rebuilt every Monday, so "newest" moves with no
-commit here; a freshness rule would redden weekly naming nobody's change.
-Bumping the pin stays the deliberate two-repository edit the ledger 610 section
-above describes.
+**Superseded by ADR-0824's infra retirement, merge 2.** This section asked an
+operator to make the `signature` job of `.github/workflows/ci.yaml` a required
+check. That job and `scripts/runner_image_pinned.py` (its structural half, run
+as the `runner-image-pinned` pre-commit hook) both left in the merge that
+deleted `infra/estate-front-runner.yaml` — the Application they guarded is
+handed to `yadgarhq/argocd`, which carries the gate's own signature job
+forward. There is nothing here left to make required; the decision moves to
+that repository's ruleset instead.
 
 ---
 
@@ -2174,33 +2100,16 @@ the last `kind delete cluster` is not the current token.**
 rotation the ARC listener pod does not re-read — not this one; see "The
 `estate-front` runner" above.)
 
-## Make the two-owners gate required (`plans/retiring-the-deploy-copies.md`)
+## Make the two-owners gate required (`plans/retiring-the-deploy-copies.md`) — NOTHING TO RUN
 
-`.github/workflows/ci.yaml` gained a `two-owners` job. It runs
-`scripts/tests/test_no_two_owners.py`, which renders the pinned parent chart at
-`infra/yadgar/values.yaml` and every surviving Application that installs into
-namespace `yadgar`, then asserts the two sets are disjoint. **That job blocks
-nothing until this step is taken**, for exactly the reason the runner-signature
-section above gives: the `main` ruleset requires one status check, `ci / passed`,
-and this job is not inside that aggregate.
-
-It cannot be a pre-commit hook. It pulls the parent from `ghcr.io` (and, until
-step 6's third merge deleted `infra/nats.yaml`, rendered that chart from
-`nats-io.github.io`), and a hook may not depend on a registry — the same line
-`runner_image_pinned.py` draws between its structural half and its signature
-half.
-
-**Why it matters more with each step.** The `yadgar` Application now carries
-`prune: true` and `selfHeal: true`. A pull request that flips a `platform.*`
-toggle without deleting the copy it duplicates puts two automated Applications on
-one object name, and they prune each other. The gate refuses exactly that pull
-request, and until it is required it only says so in a cross nobody has to read.
-
-Add `{ "context": "two-owners" }` beside `{ "context": "ci / passed" }` in the
-`required_status_checks` rule, using the read-then-replace shape the section
-above spells out in full. The context is the job id, with no `<caller> /` prefix,
-because this job is defined in this file rather than called from a reusable
-workflow.
+**Superseded by ADR-0824's infra retirement, merge 2.** This section asked an
+operator to make the `two-owners` job of `.github/workflows/ci.yaml` a
+required check. That job and `scripts/tests/test_no_two_owners.py` both left
+in the same merge: its D side read `infra/tls-app.yaml`'s destination and its
+P side read `infra/yadgar-app.yaml`'s pin, and both files are handed to
+`yadgarhq/argocd` there. `argocd` carries the gate forward, pointed at
+`applications/*.yaml`; the required-check decision moves to that repository's
+ruleset instead.
 
 ## B4b — delete the five orphaned `nats` objects (NEEDS-MAX, `plans/the-one-application-install.md`)
 
@@ -3021,3 +2930,120 @@ done
 **Rollback:** revert this merge. The revert removes the annotation and
 changes nothing else. It is safe only while the next merge (the deletion of
 the five files) has not run.
+
+## Retiring `infra`, merge 2 — delete its five children's manifests (ADR-0824)
+
+**What the merge does.** It deletes `infra/arc.yaml`,
+`infra/estate-front-app.yaml`, `infra/estate-front-runner.yaml`,
+`infra/tls-app.yaml` and `infra/yadgar-app.yaml` — the five Applications merge
+1 (above) guarded with `Prune=false`. `infra/apps.yaml` (the `infra`
+Application itself), `infra/tls/`, `infra/estate-front/` and
+`infra/yadgar/values.yaml` are UNCHANGED: the five live children still read
+those paths until `yadgarhq/argocd`'s merge 3 repoints them. The same merge
+retires `scripts/tests/test_no_two_owners.py` (its D side read
+`infra/tls-app.yaml`'s destination, its P side read `infra/yadgar-app.yaml`'s
+pin — both gone) and `scripts/runner_image_pinned.py` (its subject,
+`infra/estate-front-runner.yaml`, gone), with their pre-commit hooks and the
+`two-owners` and `signature` CI jobs. `scripts/tests/test_infra_children_handed_over.py`
+replaces `#79`'s prune-false guard with a handed-over one: none of the five
+names is declared under `infra/` any more, and `infra` itself still carries no
+`sync-options` annotation.
+
+**What it does NOT do.** It does not delete the five live `Application`
+objects. Merge 1 (`deploy#79`) put `Prune=false` on each of them, so `infra`'s
+automated prune skips them. They keep running, unowned, until merge 3
+(`yadgarhq/argocd`) declares the same specs under `applications/` and `root`
+adopts them by name.
+
+**ORDERING CONTRACT, THE SAME ONE `#77`/`#76` USED.** Merge this PR. Run the
+checks below. Then merge `yadgarhq/argocd`'s merge 3 PROMPTLY. Between the two
+merges the five Applications are unowned, and only `Prune=false` protects
+them. Do not let `argocd`'s merge land first: it cannot, since it adopts
+objects this merge is what creates the unowned window for.
+
+**`infra` does NOT read `Synced` in the window, and that is expected.** Argo
+reports five live resources git no longer declares as needing a prune.
+`Prune=false` stops the prune but does not hide the resource, so `infra` reads
+`OutOfSync` with exactly these five `requiresPruning`. It goes back to
+`Synced` once `argocd`'s merge 3 has run, because `root` then rewrites each
+tracking-id to `root:…` and `infra` stops reading the five as its own.
+
+### Before this merge — read-only, stop on any mismatch
+
+`--context kind-yadgar` on every line. This host's default context is a
+production cluster.
+
+```bash
+# 1. Each child: Prune=false present, NO finalizer, uid as in merge 1's table,
+#    tracking-id still names `infra`. A finalizer on any one -> STOP.
+for app in arc estate-front estate-front-runner tls yadgar; do
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.name} {.metadata.uid} [{.metadata.finalizers}] {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id}{"\n"}'
+done
+
+# 2. infra Synced/Healthy at merge 1's sha (05b160b) or later.
+kubectl --context kind-yadgar -n argocd get application infra \
+  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision}{"\n"}'
+
+# 3. K4: Applications in namespace argocd. Expect 13.
+kubectl --context kind-yadgar -n argocd get applications --no-headers | wc -l
+
+# 4. K6: CRD count and a hash of the sorted name=uid list.
+kubectl --context kind-yadgar get crd --no-headers | wc -l
+kubectl --context kind-yadgar get crd -o json \
+  | jq -r '[.items[]|.metadata.name+"="+.metadata.uid]|sort|join("\n")' | sha256sum | cut -c1-16
+```
+
+Measured 2026-10-01, read-only, immediately before this merge. All five
+carried `Prune=false`, no finalizer, and an
+`infra:argoproj.io/Application:argocd/<name>` tracking-id. `infra` read
+`Synced`/`Healthy` at `05b160bf2dbd6a036c7e1cf0390ab72b8283f6e5`. K4 read 13.
+K6 read 52 CRDs, sorted name=uid hash `a8026323ea9d31c2`.
+
+| Application           | uid                                    |
+| --------------------- | -------------------------------------- |
+| `arc`                 | `ff9e2c3a-52ec-41ed-a32f-8138f29f86c3` |
+| `estate-front`        | `521f859e-f888-4c4f-95dc-48728acf11ab` |
+| `estate-front-runner` | `4414811c-f7c9-47b3-b86e-b47a287cfdba` |
+| `tls`                 | `89f9542e-34ae-4d01-9a76-41c7dd58bcf0` |
+| `yadgar`              | `6181bd1c-3d73-4316-a864-b4e188dc6460` |
+| `infra`               | `218adab6-42a4-430a-8a5a-fbe94079c0d0` |
+
+Re-run all four reads just before the merge. A changed uid, a finalizer, or a
+missing `Prune=false` -> STOP and do not merge.
+
+### After this merge — read-only
+
+```bash
+# 1. Each child still exists with the SAME uid as the table above, still
+#    Prune=false, still infra: tracking-id, still Synced/Healthy itself.
+for app in arc estate-front estate-front-runner tls yadgar; do
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.name} {.metadata.uid} {.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.annotations.argocd\.argoproj\.io/tracking-id} {.status.sync.status}/{.status.health.status}{"\n"}'
+done
+
+# 2. infra: Healthy, OutOfSync, with EXACTLY these five requiring a prune,
+#    all Applications, all skipped by Prune=false (no live delete happens).
+kubectl --context kind-yadgar -n argocd get application infra \
+  -o jsonpath='{.status.sync.status}/{.status.health.status}{"\n"}'
+kubectl --context kind-yadgar -n argocd get application infra -o json \
+  | jq -r '.status.resources[] | select(.requiresPruning == true) | "\(.kind)/\(.name)"' | sort
+# expect exactly: Application/arc Application/estate-front
+#                 Application/estate-front-runner Application/tls Application/yadgar
+
+# 3. K4 still 13 (no object has actually been deleted yet); K6 still 52 CRDs
+#    and the same hash `a8026323ea9d31c2`.
+```
+
+Any uid change, any of the five missing, or any extra `requiresPruning`
+resource -> STOP. Do not merge `yadgarhq/argocd`'s merge 3, and report.
+
+**Merge `yadgarhq/argocd`'s merge 3 promptly after this one.** The five
+children are unowned until it lands — `Prune=false` is what keeps them alive
+in the window, not what ends it.
+
+**Rollback:** revert this merge, but only BEFORE `argocd`'s merge 3 merges.
+The five files come back, `infra` declares them again and reads `Synced`.
+After `argocd`'s merge has landed, do NOT revert this merge: `infra` and
+`root` would both declare the five and fight over each tracking-id. Revert
+`argocd`'s merge first, and read its own rollback note before doing so.
