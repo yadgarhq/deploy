@@ -188,6 +188,31 @@ spec:
   syncPolicy:
     automated: { prune: true, selfHeal: true }
     syncOptions: [CreateNamespace=true]
+    # A LONGER RETRY WINDOW FOR A COLD INSTALL (ledger 1212). This Application
+    # renders the three MariaDB CRs, and on a cold install they can reach the
+    # API server before their CRD or the operator's webhook does — the webhooks
+    # are `failurePolicy: Fail`. No sync wave orders this against the operators
+    # any more: they are children of `yadgarhq/argocd`'s root since E2.
+    #
+    # WITHOUT THIS BLOCK ARGO STILL RETRIES, BUT BRIEFLY. Argo CD v3.1.8 gives
+    # every automated sync an implicit `RetryStrategy{Limit: 5}`
+    # (`controller/appcontroller.go:2148`) with the defaults 5s, ×2, capped at
+    # 3m (`application_defaults.go`): 5+10+20+40+80s, about 2.6 minutes. After
+    # that the rule quoted on `retry` in `infra/tls-app.yaml` applies — no new
+    # attempt at the same revision until the next commit.
+    #
+    # THIS BLOCK EXTENDS THAT WINDOW to the operators' own shape: six attempts
+    # at 15s, 30s, 1m, 2m, 4m and 5m, about 12.75 minutes, which gives the
+    # mariadb-operator webhook more time to come up. The trade-off: a failure
+    # that is NOT transient is reported about ten minutes later. Retry fires
+    # only after a FAILED sync operation, so a healthy cluster sees no change.
+    # `scripts/tests/test_no_two_owners.py` holds this block to that shape.
+    retry:
+      limit: 6
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 5m
 
   # MOVED VERBATIM FROM `infra/databases-app.yaml`, WHICH MERGE A DELETED.
   #
