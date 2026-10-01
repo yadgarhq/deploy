@@ -38,6 +38,10 @@ metadata:
     # applied ahead of the CRD this chart installs is a hard sync failure rather
     # than something Argo retries into place.
     argocd.argoproj.io/sync-wave: "-10"
+    # E1 of the operators handover (ADR-0824): guards this Application object
+    # itself from `infra`'s prune when its file leaves at E2, so argocd's root
+    # can adopt it by tracking-id at E3 with the same uid.
+    argocd.argoproj.io/sync-options: Prune=false
 spec:
   project: default
   source:

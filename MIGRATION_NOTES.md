@@ -2766,3 +2766,68 @@ hand if they must go:
 kubectl --context kind-yadgar -n yadgar delete job,rolebinding,role,serviceaccount \
   preflight envoy-gateway-probe --ignore-not-found
 ```
+
+## E1 — guard the six operator Applications from `infra`'s prune (NEEDS-MAX to merge, ADR-0824)
+
+**What the merge does.** It adds one annotation,
+`argocd.argoproj.io/sync-options: Prune=false`, to the OWN `metadata` of six
+`infra/*.yaml` Application manifests: `cert-manager`, `keda`,
+`mariadb-operator`, `mariadb-operator-crds`, `envoy-gateway` and `prometheus`.
+No `spec` field changes on any of the six, so no operator pod rolls and no
+rendered object moves.
+
+**Why.** ADR-0824 keeps each operator as today's own Argo `Application`,
+adopted by `yadgarhq/argocd`'s root by TRACKING-ID rather than reinstalled. The
+`infra` Application (this repository's own app-of-apps) runs
+`syncPolicy.automated.prune: true` over `infra/*.yaml`, and a later merge (E2)
+deletes these six files ahead of that adoption. Without this annotation, E2
+would prune the live `Application` OBJECTS themselves — not merely what they
+source — before argocd's root ever gets to adopt them, costing each one its
+uid. `Prune=false` on the source copy, landed one merge ahead of the handover
+that removes it, is the same shape `#68` and `#70` used earlier in this
+ladder.
+
+**Read-only, BEFORE this merge, on 2026-10-01** (`--context kind-yadgar` on
+every line — this host's default context is a production cluster):
+
+```bash
+for app in cert-manager keda mariadb-operator mariadb-operator-crds envoy-gateway prometheus; do
+  echo "=== $app ==="
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.uid} {.metadata.finalizers}{"\n"}'
+done
+```
+
+Recorded uids (none carried a `sync-options` annotation or a finalizer before
+this merge):
+
+| Application             | uid                                    |
+| ----------------------- | -------------------------------------- |
+| `cert-manager`          | `803a0a98-29a9-4ef0-b556-3a1a3754a7ea` |
+| `keda`                  | `1ffb7cc6-cb58-4185-90b0-7eb00d854e89` |
+| `mariadb-operator`      | `6e907a55-222c-45b7-8aa4-4ce5a2102bc6` |
+| `mariadb-operator-crds` | `47326d8d-6b64-45c7-92c2-05e170a32631` |
+| `envoy-gateway`         | `c997c5d8-220b-481f-b23f-e01dbbad549d` |
+| `prometheus`            | `97638c3b-9b12-431f-a2f3-4e96f8ae7a7b` |
+
+`infra` was `Synced`/`Healthy` at revision `187f15936e77a745e2956fef89a15c4b5899264e`.
+
+**After this merge, confirm the annotation landed without disturbing anything
+else.** Expect `Prune=false` on each line, every uid UNCHANGED from the table
+above, and no finalizer:
+
+```bash
+for app in cert-manager keda mariadb-operator mariadb-operator-crds envoy-gateway prometheus; do
+  echo "=== $app ==="
+  kubectl --context kind-yadgar -n argocd get application "$app" \
+    -o jsonpath='{.metadata.annotations.argocd\.argoproj\.io/sync-options} {.metadata.uid} {.metadata.finalizers}{"\n"}'
+done
+
+# infra re-synced at this merge's sha. Expect Synced/Healthy and the merge commit.
+kubectl --context kind-yadgar -n argocd get application infra \
+  -o jsonpath='{.status.sync.status}/{.status.health.status} {.status.sync.revision}{"\n"}'
+```
+
+**Rollback:** revert this merge. The revert removes the annotation and changes
+nothing else, so `infra` goes back to pruning these six on the ordinary
+app-of-apps rule — safe as long as E2 has not yet run.

@@ -1145,6 +1145,89 @@ def test_a_tracked_handover_without_the_annotation_reddens(tmp_path: Path) -> No
     ], missing
 
 
+# ── E1 OF THE OPERATORS HANDOVER (ADR-0824): THE APPLICATION OBJECTS GUARD
+# THEMSELVES, NOT THEIR SOURCED OBJECTS ──────────────────────────────────────
+# ADR-0824 keeps each operator as today's own Argo `Application` — named and
+# namespaced exactly as now — and has `yadgarhq/argocd`'s root adopt it by
+# TRACKING-ID rather than reinstall it. `infra/apps.yaml` (this repository's
+# own app-of-apps) prunes anything its render of `infra/*.yaml` stops listing
+# (`syncPolicy.automated.prune: true`), and E2 deletes these six files one
+# merge AFTER this one. Without a guard, E2 would prune the live `Application`
+# OBJECTS themselves — not merely their rendered resources — before argocd's
+# root ever gets to adopt them by tracking-id at E3, costing each one its uid.
+#
+# `argocd.argoproj.io/sync-options: Prune=false` lands here, at E1, on each
+# Application's OWN `metadata.annotations` — the thing `infra` would otherwise
+# prune — one merge ahead of E2, the same shape `deploy#68` and `deploy#70`
+# used for a same-name object handed from one Application to another (see the
+# module docstring's NEXT HANDOVER section above).
+#
+# THIS IS A DIFFERENT GATE FROM `unguarded_handovers` ABOVE, NOT A REUSE OF
+# IT. That function reads the OBJECTS a path-sourced Application hands over,
+# globbing `spec.source.path`; these six source a Helm CHART
+# (`spec.source.chart`), carry no `path` at all, and what is being handed
+# over is the `Application` document itself. Measured 2026-10-01 against the
+# live cluster (`kubectl -n argocd get application <name> -o jsonpath=...`):
+# all six exist, none carries a `sync-options` annotation yet, and none
+# carries a finalizer.
+OPERATOR_HANDOVER: tuple[str, ...] = (
+    "cert-manager",
+    "keda",
+    "mariadb-operator",
+    "mariadb-operator-crds",
+    "envoy-gateway",
+    "prometheus",
+)
+
+
+def operator_application_sync_options(tree: Path) -> dict[str, str]:
+    """Each `OPERATOR_HANDOVER` name's OWN `sync-options` annotation, read off `infra/<name>.yaml`."""
+    found: dict[str, str] = {}
+    for _, application in applications(tree):
+        name = (application.get("metadata") or {}).get("name")
+        if name not in OPERATOR_HANDOVER:
+            continue
+        annotations = (application.get("metadata") or {}).get("annotations") or {}
+        found[name] = str(annotations.get("argocd.argoproj.io/sync-options", ""))
+    return found
+
+
+def unguarded_operator_handovers(tree: Path) -> list[str]:
+    """Every `OPERATOR_HANDOVER` name whose own Application is missing `Prune=false`."""
+    options = operator_application_sync_options(tree)
+    return [
+        name
+        for name in OPERATOR_HANDOVER
+        if PRUNE_FALSE not in [option.strip() for option in options.get(name, "").split(",")]
+    ]
+
+
+def test_every_operator_application_guards_itself_before_the_handover(working_tree: Path) -> None:
+    """E1: all six operator Applications carry `Prune=false` on themselves."""
+    found = operator_application_sync_options(working_tree)
+    assert set(found) == set(OPERATOR_HANDOVER), (
+        f"expected infra/*.yaml to carry {sorted(OPERATOR_HANDOVER)}; found {sorted(found)}"
+    )
+    missing = unguarded_operator_handovers(working_tree)
+    assert not missing, f"operator Application(s) without {PRUNE_FALSE}: {missing}"
+
+
+def test_an_operator_application_without_the_annotation_reddens(tmp_path: Path) -> None:
+    """Red case: drop the annotation from one Application; only that name is named."""
+    tree = a_copy_of_the_tree(tmp_path)
+    path = tree / "infra" / "cert-manager.yaml"
+    text = path.read_text()
+    annotated = (
+        "    # E1 of the operators handover (ADR-0824): guards this Application object\n"
+        "    # itself from `infra`'s prune when its file leaves at E2, so argocd's root\n"
+        "    # can adopt it by tracking-id at E3 with the same uid.\n"
+        "    argocd.argoproj.io/sync-options: Prune=false\n"
+    )
+    assert annotated in text, "fixture is stale: cert-manager.yaml no longer carries this block"
+    path.write_text(text.replace(annotated, ""))
+    assert unguarded_operator_handovers(tree) == ["cert-manager"]
+
+
 # ── STEP 9: THE RETIRED `bootstrap` APPLICATION, FOR THE RED CASES ───────────
 # Only what the gate reads, for the reason the valkey constants above give.
 RESTORED_BOOTSTRAP_APPLICATION = """
