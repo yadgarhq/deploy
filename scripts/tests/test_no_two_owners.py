@@ -2189,16 +2189,22 @@ def test_a_pinned_nodeport_on_the_probe_envoyproxy_reddens(working_tree: Path) -
 # A COLD INSTALL CAN APPLY THE THREE MariaDB CRs BEFORE THEIR CRD OR THE
 # OPERATOR'S WEBHOOK EXISTS. The operators left this repository at E2 and are
 # children of `yadgarhq/argocd`'s root now, so no sync wave orders them against
-# `yadgar` any more, and the webhooks are `failurePolicy: Fail`. Argo's
-# automated sync does not reattempt a failed sync of the same revision (the
-# comment on `retry` in `infra/tls-app.yaml` quotes the rule), so without a
-# retry the Application stays failed until the next commit.
+# `yadgar` any more, and the webhooks are `failurePolicy: Fail`. Argo CD v3.1.8
+# gives an automated sync an implicit `RetryStrategy{Limit: 5}` at 5s, ×2,
+# capped at 3m (`controller/appcontroller.go:2148`), about 2.6 minutes in all;
+# the block this gate pins extends that window to about 12.75 minutes.
 #
 # A NAMED GATE, NOT A CENSUS, and that is deliberate rather than an oversight.
 # `infra`, `arc`, `estate-front` and `estate-front-runner` declare no retry
 # today and are out of scope here. What IS asserted of every Application is the
-# weaker property: a retry, where declared, is finite — Argo reads a negative
-# `limit` as unlimited, and a missing `maxDuration` as no cap on the backoff.
+# weaker property: a retry, where declared, is finite. Read off Argo CD v3.1.8:
+#
+#   - a negative `limit` retries for ever (`appcontroller.go:1477`), and a `0`
+#     declares no retry at all, which also drops the implicit five;
+#   - an OMITTED `maxDuration` is capped by `DefaultSyncRetryMaxDuration`, 3m
+#     (`application_defaults.go:6`, read by `RetryStrategy.NextRetryAt`), but a
+#     `maxDuration` that parses to zero or less disables the cap, because
+#     `NextRetryAt` applies it only `if maxDuration > 0`.
 #
 # THE SHAPE IS THE OPERATORS' OWN, from `yadgarhq/argocd`'s `applications/`:
 # six attempts at 15s, 30s, 1m, 2m, 4m and 5m, about 12.75 minutes in all.
@@ -2223,9 +2229,33 @@ def retry_violations(tree: Path) -> list[str]:
         limit = retry.get("limit")
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             problems.append(f"{name} ({path.name}): retry.limit {limit!r} is not a finite count")
-        if not (retry.get("backoff") or {}).get("maxDuration"):
-            problems.append(f"{name} ({path.name}): retry.backoff.maxDuration is unset")
+        max_duration = (retry.get("backoff") or {}).get("maxDuration")
+        if max_duration is not None and argo_duration_seconds(max_duration) <= 0:
+            problems.append(
+                f"{name} ({path.name}): retry.backoff.maxDuration {max_duration!r} does not cap the backoff"
+            )
     return problems
+
+
+_GO_DURATION_UNITS = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1, "m": 60, "h": 3600}
+
+
+def argo_duration_seconds(value: object) -> float:
+    """A retry duration as Argo's `parseStringToDuration` reads it, in seconds.
+
+    A bare integer is seconds; anything else is a Go duration. A value Argo
+    cannot parse makes it fail the sync rather than retry, so it reads as 0 here
+    and is reported as not capping the backoff.
+    """
+    text = str(value).strip()
+    if re.fullmatch(r"[+-]?\d+", text):
+        return float(int(text))
+    sign = -1 if text.startswith("-") else 1
+    body = text.lstrip("+-")
+    parts = re.findall(r"(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)", body)
+    if not parts or "".join(n + u for n, u in parts) != body:
+        return 0.0
+    return sign * sum(float(n) * _GO_DURATION_UNITS[u] for n, u in parts)
 
 
 def test_every_required_retry_is_declared_and_every_retry_is_finite(working_tree: Path) -> None:
@@ -2235,25 +2265,41 @@ def test_every_required_retry_is_declared_and_every_retry_is_finite(working_tree
     assert not problems, problems
 
 
-def _rewrite_yadgar_retry(tree: Path, old: str, new: str) -> None:
-    path = tree / "infra" / "yadgar-app.yaml"
+def _rewrite_retry(tree: Path, filename: str, old: str, new: str) -> None:
+    path = tree / "infra" / filename
     text = path.read_text()
-    assert old in text, f"the retry block in yadgar-app.yaml moved; update this red case ({old!r})"
+    assert old in text, f"the retry block in {filename} moved; update this red case ({old!r})"
     path.write_text(text.replace(old, new, 1))
 
 
 @pytest.mark.parametrize(
-    ("old", "new", "expected"),
+    ("filename", "name", "old", "new", "expected"),
     [
-        ("    retry:\n      limit: 6\n", "    noRetry:\n      limit: 6\n", "retry is None"),
-        ("      limit: 6\n", "      limit: -1\n", "is not a finite count"),
-        ("        maxDuration: 5m\n", "", "maxDuration is unset"),
+        ("yadgar-app.yaml", "yadgar", "    retry:\n      limit: 6\n", "    noRetry:\n      limit: 6\n", "retry is None"),
+        ("yadgar-app.yaml", "yadgar", "      limit: 6\n", "      limit: -1\n", "is not a finite count"),
+        ("yadgar-app.yaml", "yadgar", "        maxDuration: 5m\n", "        maxDuration: 0s\n", "does not cap the backoff"),
+        ("tls-app.yaml", "tls", "      limit: 60\n", "      limit: -1\n", "is not a finite count"),
+        ("tls-app.yaml", "tls", "        maxDuration: 5m\n", "        maxDuration: 0\n", "does not cap the backoff"),
     ],
-    ids=["deleted", "unlimited", "uncapped"],
+    ids=["yadgar-deleted", "yadgar-unlimited", "yadgar-uncapped", "tls-unlimited", "tls-uncapped"],
 )
-def test_a_missing_or_unbounded_retry_reddens(tmp_path: Path, old: str, new: str, expected: str) -> None:
-    """Red cases: delete the block, make it unlimited, or uncap it; `yadgar` is named."""
+def test_a_missing_or_unbounded_retry_reddens(
+    tmp_path: Path, filename: str, name: str, old: str, new: str, expected: str
+) -> None:
+    """Red cases: delete, unlimit or uncap a retry; the Application is named.
+
+    The two `tls` cases pin the "every declared retry is finite" half, which the
+    `yadgar` cases alone cannot: `yadgar`'s shape check would redden them anyway.
+    """
     tree = a_copy_of_the_tree(tmp_path)
-    _rewrite_yadgar_retry(tree, old, new)
+    _rewrite_retry(tree, filename, old, new)
     problems = retry_violations(tree)
-    assert any(p.startswith("yadgar ") and expected in p for p in problems), problems
+    assert any(p.startswith(f"{name} ") and expected in p for p in problems), problems
+
+
+def test_an_omitted_max_duration_is_capped_by_argos_default(tmp_path: Path) -> None:
+    """Green case: no `maxDuration` falls back to Argo's 3m cap, so it is finite."""
+    tree = a_copy_of_the_tree(tmp_path)
+    _rewrite_retry(tree, "tls-app.yaml", "        maxDuration: 5m\n", "")
+    problems = retry_violations(tree)
+    assert not [p for p in problems if p.startswith("tls ")], problems
