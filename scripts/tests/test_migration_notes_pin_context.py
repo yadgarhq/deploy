@@ -89,7 +89,7 @@ def _first_word_after(line: str, start: int) -> str:
     return match.group(1) if match else ""
 
 
-_COMMAND_START_TOKENS = ("|", "$(", "`", ";", "&&", "||", "(")
+_COMMAND_START_TOKENS = ("|", "$(", "`", ";", "&&", "||", "(", "{")
 
 # Shell keywords that introduce a new command in their own right (the word
 # itself carries no punctuation a token-suffix check could see), and wrapper
@@ -112,7 +112,7 @@ def _starts_a_command(raw: str, match_start: int) -> bool:
     so a bare `\\bargocd\\b` scan flags every `kubectl -n argocd ...` line
     measured, which is nearly a third of the file. A binary only counts as
     invoked at the true start of a (sub)command: line start; right after a
-    pipe, command substitution, backtick, `;`, `&&`, `||`, `(` or `!`
+    pipe, command substitution, backtick, `;`, `&&`, `||`, `(`, `{` or `!`
     (negation, which is a token but not a word, hence checked the same way
     as the punctuation set); right after a shell keyword that opens a new
     command (`do`/`then`/`else`) or a wrapper that runs its argv as a command
@@ -171,6 +171,14 @@ def _strip_comment(line: str) -> str:
     none of this file's commands happen to quote one, but a scanner that
     assumed otherwise would be an accident waiting to happen. Stops at the
     first UNQUOTED `#`.
+
+    A `#` STARTS A COMMENT ONLY AT THE START OF A WORD, matching bash: `echo
+    nixpkgs#x && echo ran` prints `ran` (the `#` is data, mid-word), but `echo
+    nixpkgs #x && echo ran` does not (the `#` is a comment, preceded by
+    whitespace). `nix shell nixpkgs#x` and `https://x.example/#frag` both
+    carry a literal, non-comment `#` — treating every unquoted `#` as a
+    comment start truncated the line right there, hiding an unpinned command
+    chained after it with `&&`.
     """
     in_single = in_double = False
     for i, ch in enumerate(line):
@@ -178,7 +186,7 @@ def _strip_comment(line: str) -> str:
             in_single = not in_single
         elif ch == '"' and not in_single:
             in_double = not in_double
-        elif ch == "#" and not in_single and not in_double:
+        elif ch == "#" and not in_single and not in_double and (i == 0 or line[i - 1].isspace()):
             return line[:i]
     return line
 
@@ -412,3 +420,36 @@ def test_tilde_fence_is_scanned(tmp_path: Path) -> None:
     path.write_text(text)
     offenders = unpinned_invocations(path)
     assert offenders, "a ~~~-fenced unpinned kubectl should have reddened and did not"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "nix shell nixpkgs#x && kubectl -n yadgar delete pod a",
+        "curl https://x.example/#frag && kubectl -n yadgar delete pod a",
+    ],
+)
+def test_mid_word_hash_does_not_start_a_comment(tmp_path: Path, command: str) -> None:
+    """A `#` is a comment only at the START of a word — mid-word it is data.
+
+    `nixpkgs#x` (a nix flake reference) and `https://x.example/#frag` (a URL
+    fragment) both contain a literal `#` with no preceding whitespace. Bash
+    agrees: `echo nixpkgs#x && echo ran` prints `ran`, but `echo nixpkgs #x &&
+    echo ran` does not. A comment-stripper that stops at ANY unquoted `#`
+    truncates these lines right there, hiding everything after — including
+    the unpinned `kubectl` this test's command carries.
+    """
+    text = f"```bash\n{command}\n```\n"
+    path = tmp_path / "MIGRATION_NOTES.md"
+    path.write_text(text)
+    offenders = unpinned_invocations(path)
+    assert offenders, f"{command!r} hid its kubectl behind a false comment and did not redden"
+
+
+def test_brace_group_open_starts_a_command(tmp_path: Path) -> None:
+    """`{ kubectl ...; }` groups commands in the current shell — `{` opens one."""
+    text = "```bash\n{ kubectl -n yadgar get pod a; }\n```\n"
+    path = tmp_path / "MIGRATION_NOTES.md"
+    path.write_text(text)
+    offenders = unpinned_invocations(path)
+    assert offenders, "an unpinned kubectl right after `{` should have reddened and did not"

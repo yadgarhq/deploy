@@ -141,8 +141,9 @@ Read the output, do not script the exit status.
 
 **Still a human step, deliberately.** The bootstrap can create a Secret and
 cannot update one, which is what makes a resync safe; the same limit means it
-cannot rotate one either. **`openssl` is not installed on this host** — get a
-shell that has it first (`nix shell nixpkgs#openssl`). A rotation is:
+cannot rotate one either. **`openssl` may be missing** (it is on the reference
+host) — get a shell that has it first (`nix shell nixpkgs#openssl`). A
+rotation is:
 
 ```bash
 (
