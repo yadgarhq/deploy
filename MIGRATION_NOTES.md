@@ -139,7 +139,8 @@ Read the output, do not script the exit status.
 **Still a human step, deliberately.** The bootstrap can create a Secret and
 cannot update one, which is what makes a resync safe; the same limit means it
 cannot rotate one either. A rotation is one `kubectl create secret
---dry-run=client -o yaml | kubectl apply -f -` and then rolling **both**
+--dry-run=client -o yaml | kubectl apply --server-side
+--field-manager=yadgar-deploy --force-conflicts -f -` and then rolling **both**
 Deployments. The next sync sees the Secret present, answers 409, and leaves the
 new password alone.
 
@@ -259,7 +260,8 @@ Before the first sync, so `iam` never waits:
 kubectl create secret generic iam-keys \
   --namespace yadgar \
   --from-file=encryption.key \
-  --from-file=blind-index.key
+  --from-file=blind-index.key \
+  --dry-run=client -o yaml | kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
 ```
 
 Then destroy the local copies:
@@ -282,7 +284,8 @@ op document get "yadgar iam — blind index key" --out-file blind-index.key
 kubectl create secret generic iam-keys \
   --namespace yadgar \
   --from-file=encryption.key \
-  --from-file=blind-index.key
+  --from-file=blind-index.key \
+  --dry-run=client -o yaml | kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
 
 shred -u encryption.key blind-index.key
 ```
@@ -467,12 +470,22 @@ kubectl -n yadgar get certificate \
 ```
 
 **Every pair of adjacent renewal instants must be more than 300 seconds apart.**
-That is the invariant the `renewBefore` ladder in
-`infra/internal-tls/certificates.yaml` exists to buy: each service's pods draw a
-rotation splay from `[0, 300)` independently, so two services sharing an instant
-put all of their pods through a restart inside one five-minute window, and a
-PodDisruptionBudget cannot hold that because a pod that exits 0 was never
-evicted.
+That is the invariant the `renewBefore` ladder exists to buy: each service's
+pods draw a rotation splay from `[0, 300)` independently, so two services
+sharing an instant put all of their pods through a restart inside one
+five-minute window, and a PodDisruptionBudget cannot hold that because a pod
+that exits 0 was never evicted. **The ladder now lives in `yadgarhq/platform`**
+— `chart/templates/certificates.yaml` for the leaves, `internal-ca.yaml` and
+`edge-certificate.yaml` for the two non-leaf Certificates — reading each
+leaf's `renewBefore` from `certificates.leaves.<name>` in values;
+`infra/internal-tls/certificates.yaml` was deleted in deploy#81 (ADR-0828).
+Read the live ladder rather than trusting a figure here:
+
+```bash
+kubectl -n yadgar get certificate \
+  -o custom-columns='NAME:.metadata.name,RENEW_BEFORE:.spec.renewBefore' \
+  --sort-by=.spec.renewBefore
+```
 
 **`project-db-tls` is the first leaf that cannot inherit that separation from
 its step, which is why this check is a step rather than a note.** The other
@@ -653,12 +666,22 @@ kubectl -n yadgar get certificate \
 ```
 
 **Every pair of adjacent renewal instants must be more than 300 seconds apart.**
-That is the invariant the `renewBefore` ladder in
-`infra/internal-tls/certificates.yaml` exists to buy: each service's pods draw a
-rotation splay from `[0, 300)` independently, so two services sharing an instant
-put all of their pods through a restart inside one five-minute window, and a
-PodDisruptionBudget cannot hold that because a pod that exits 0 was never
-evicted.
+That is the invariant the `renewBefore` ladder exists to buy: each service's
+pods draw a rotation splay from `[0, 300)` independently, so two services
+sharing an instant put all of their pods through a restart inside one
+five-minute window, and a PodDisruptionBudget cannot hold that because a pod
+that exits 0 was never evicted. **The ladder now lives in `yadgarhq/platform`**
+— `chart/templates/certificates.yaml` for the leaves, `internal-ca.yaml` and
+`edge-certificate.yaml` for the two non-leaf Certificates — reading each
+leaf's `renewBefore` from `certificates.leaves.<name>` in values;
+`infra/internal-tls/certificates.yaml` was deleted in deploy#81 (ADR-0828).
+Read the live ladder rather than trusting a figure here:
+
+```bash
+kubectl -n yadgar get certificate \
+  -o custom-columns='NAME:.metadata.name,RENEW_BEFORE:.spec.renewBefore' \
+  --sort-by=.spec.renewBefore
+```
 
 **These two leaves are minted on their own day, so their steps do not set their
 instants.** `2160h - 774h = 1386h`, which is 231 six-hour steps exactly, and
@@ -820,7 +843,8 @@ no local files in play:
 kubectl create secret tls yadgar-dev-ca \
   --namespace cert-manager \
   --cert <(op read "op://Private/yadgar-dev-ca/certificate") \
-  --key  <(op read "op://Private/yadgar-dev-ca/private key")
+  --key  <(op read "op://Private/yadgar-dev-ca/private key") \
+  --dry-run=client -o yaml | kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
 ```
 
 Then destroy the local copies — 1Password is the durable one:
@@ -1693,19 +1717,29 @@ make bootstrap   # runs secrets first
 ```
 
 It is idempotent the same way the other two are — `--dry-run=client -o yaml |
-kubectl apply -f -` — so re-running it on a cluster that already has the Secret
+kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -`,
+the server-side form deploy#82 (`0e33e2d`) adopted, matching the Makefile's
+`$(SECRET_APPLY)` — so re-running it on a cluster that already has the Secret
 is a no-op rather than an error.
 
 **"No-op" holds only while the 1Password copy is unchanged.** If the document
-holds a DIFFERENT key, this is a rotation rather than a no-op: the Secret carries
-`kubectl.kubernetes.io/last-applied-configuration`, so the three-way merge does
-update the value. That is the behaviour you want — but **the listener does not
-re-read the Secret**. After any rotation, delete the listener pod in
+holds a DIFFERENT key, this is a rotation rather than a no-op: `--force-conflicts`
+is what lets `yadgar-deploy` win the field it already owns, so the server-side
+apply updates the value. That is the behaviour you want — but **the listener does
+not re-read the Secret**. After any rotation, delete the listener pod in
 `arc-systems` so it picks the new credential up; otherwise it keeps authenticating
 with the old key and nothing says so. The private key goes through a `mktemp -d` file
 created under `umask 077` and shredded by an `EXIT` trap; it never reaches argv
 or shell history. `github_app_id` and `github_app_installation_id` are passed as
 literals because neither is a secret.
+
+**Server-side apply does not retroactively strip a `last-applied-configuration`
+annotation a Secret already carries from before this switch.** That one-time
+strip is ledger 1222, already done on `kind-yadgar`; a cluster recreated from an
+older snapshot, or any cluster that still shows the annotation on one of these
+three Secrets, needs the same strip once — `kubectl annotate secret <name>
+kubectl.kubernetes.io/last-applied-configuration-` — before server-side apply's
+ownership tracking is the only copy of the data in the object.
 
 **If `make secrets` fails on this step**, the 1Password document is missing or
 renamed. Recreate it by the procedure below, keeping the title byte-identical —
@@ -1823,7 +1857,7 @@ kubectl -n estate-front create secret generic estate-runner-github \
   --from-literal=github_app_id=4814165 \
   --from-literal=github_app_installation_id=158692002 \
   --from-file=github_app_private_key=./yadgarhq-bot.pem \
-  --dry-run=client -o yaml | kubectl apply -f -
+  --dry-run=client -o yaml | kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
 
 shred -u ./yadgarhq-bot.pem
 ```
@@ -1833,8 +1867,9 @@ explicitly. Dropping the `github_app_private_key=` prefix would name it after th
 file, and the listener would report a missing field rather than a wrong one.
 
 Argo does not manage this Secret and will not prune it. Rotating the key is the
-same `create secret` command with `--dry-run=client -o yaml | kubectl apply -f -`
-appended, then deleting the listener pod in `arc-systems` so it re-reads it.
+same `create secret` command with `--dry-run=client -o yaml | kubectl apply
+--server-side --field-manager=yadgar-deploy --force-conflicts -f -` appended,
+then deleting the listener pod in `arc-systems` so it re-reads it.
 
 ### The fork pull-request approval policy — **NOTHING TO RUN**
 
