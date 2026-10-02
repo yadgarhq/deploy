@@ -42,6 +42,15 @@ names, and a restored copy here would give each a second owner.
 require the directory to exist: an absent `infra/` glob-matches nothing,
 which is the same "found none" result a present-but-empty `infra/` would
 give, and both are the retired state this gate accepts.
+
+LATER: `deploy#85` deleted the Makefile `test_makefile_no_longer_applies_infra_apps_yaml`
+and `test_a_restored_bootstrap_apply_line_reddens` guarded, once `make
+secrets`/`make bootstrap` moved to `yadgarhq/argocd` (`argocd#59`, ADR-0803)
+and this repository owned no Application to recreate via `make bootstrap`
+any more. Both tests, and `makefile_applies_infra_apps` with the constants
+only they used, went with it; the `infra/` half of this file — the gate
+that no Application manifest is declared under `infra/` — is unaffected and
+still reads `infra/` directly, not the Makefile.
 """
 
 from __future__ import annotations
@@ -56,10 +65,6 @@ import pytest
 import yaml
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-
-# `make bootstrap`'s one-time handover apply. Its continued presence would
-# recreate the `infra` Application M4 deleted by hand on every fresh cluster.
-APPLY_INFRA_APPS = "kubectl apply -f infra/apps.yaml"
 
 
 def applications(tree: Path):
@@ -97,42 +102,16 @@ def infra_application_names(tree: Path) -> list[str]:
     ]
 
 
+# Kept for `test_a_flag_value_of_apply_is_not_mistaken_for_the_subcommand`
+# and `test_the_gate_handles_an_adversarial_string_fast` below — both test
+# the regex's own matching and ReDoS-safety directly. The Makefile reader
+# that used to resolve this against a live `Makefile`,
+# `makefile_applies_infra_apps`, was deleted in `deploy#85` along with the
+# Makefile itself (`make secrets`/`make bootstrap` moved to
+# `yadgarhq/argocd`, `argocd#59`, ADR-0803).
 _APPLY_INFRA_APPS_RE = re.compile(
     r"kubectl(?:\s+-[^\s=]+(?:=\S+|\s+[^\s-]\S*)?)*\s+apply\s+-f\s+infra/apps\.yaml\b"
 )
-
-
-def makefile_applies_infra_apps(tree: Path) -> bool:
-    """Whether any Makefile target still runs `kubectl apply -f infra/apps.yaml`.
-
-    A regex, not a plain substring search — pinned or not, the failure this
-    gate exists for is the LINE coming back under a renamed or different
-    target, not only under `bootstrap`, and not only in its original
-    unpinned form. The flag-skipping group tolerates ANY number of flags —
-    `--context $(KUBE_CONTEXT)` or `--context=$(KUBE_CONTEXT)`, `-n argocd`,
-    in either order — landing between `kubectl` and `apply`, not only the
-    one flag this Makefile happens to carry today (ledger 1228 follow-up: a
-    narrower `--context`-only version of this regex missed a restored line
-    that also carried `-n argocd`).
-
-    THE GRAMMAR IS DELIBERATELY UNAMBIGUOUS, after a CodeQL `py/redos`
-    finding on an earlier, looser version of this same regex
-    (`-\\S+(?:[ =]\\S+)?`): a flag's NAME (`-[^\\s=]+`) cannot contain `=`,
-    and a space-separated VALUE (`\\s+[^\\s-]\\S*`) cannot start with `-` —
-    so a flag's name and a following value can never both claim the same
-    characters, and the regex engine has exactly one way to parse any input,
-    never two. The old grammar let `-\\S+` swallow an `=` that `[ =]\\S+`
-    could also have matched, and repeating that ambiguity under `(?:...)*`
-    is what let backtracking blow up: measured, `kubectl` + `' -!' * 40`
-    (no trailing match, forcing a full backtrack search) took over 5 seconds
-    against the old pattern. The same input against this one is sub-
-    millisecond, proven by `test_the_gate_handles_an_adversarial_string_fast`
-    below.
-    """
-    makefile = tree / "Makefile"
-    if not makefile.is_file():
-        return False
-    return bool(_APPLY_INFRA_APPS_RE.search(makefile.read_text()))
 
 
 def a_copy_of_the_tree(tmp_path: Path) -> Path:
@@ -156,14 +135,6 @@ def test_infra_declares_no_application_manifest_at_all(working_tree: Path) -> No
     names = infra_application_names(working_tree)
     print(f"[infra retire] {len(names)} Application(s) still declared under infra/: {sorted(names)}")
     assert names == [], f"infra retired at M4, still declared under infra/: {sorted(names)}"
-
-
-def test_makefile_no_longer_applies_infra_apps_yaml(working_tree: Path) -> None:
-    """`make bootstrap` cannot recreate the `infra` Application M4 deleted by hand."""
-    assert not makefile_applies_infra_apps(working_tree), (
-        f"Makefile still runs `{APPLY_INFRA_APPS}` — a fresh `make bootstrap` "
-        "would recreate the `infra` Application M4 deleted by hand."
-    )
 
 
 # THE SMALLEST APPLICATION THE GATE MUST STILL NAME. Only `metadata.name` is
@@ -219,51 +190,6 @@ def test_a_restored_application_as_json_reddens(tmp_path: Path) -> None:
     application = yaml.safe_load(RESTORED_APPLICATION.format(name="yadgar"))
     (tree / "infra" / "yadgar.json").write_text(json.dumps(application))
     assert infra_application_names(tree) == ["yadgar"]
-
-
-PINNED_APPLY_INFRA_APPS = "kubectl --context $(KUBE_CONTEXT) apply -f infra/apps.yaml"
-PINNED_EQUALS_APPLY_INFRA_APPS = "kubectl --context=$(KUBE_CONTEXT) apply -f infra/apps.yaml"
-PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS = (
-    "kubectl --context $(KUBE_CONTEXT) -n argocd apply -f infra/apps.yaml"
-)
-
-
-@pytest.mark.parametrize(
-    "restored_line",
-    [
-        APPLY_INFRA_APPS,
-        PINNED_APPLY_INFRA_APPS,
-        PINNED_EQUALS_APPLY_INFRA_APPS,
-        PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS,
-    ],
-    ids=["unpinned", "pinned", "pinned-equals-form", "pinned-with-namespace-flag"],
-)
-def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path, restored_line: str) -> None:
-    """Mutation check: restore the Makefile's apply line, pinned or not; the gate catches it.
-
-    `APPLY_INFRA_APPS` is a literal substring, so a restoration that carries
-    the `--context $(KUBE_CONTEXT)` pin every kubectl in this Makefile now
-    gets (ledger 1228 follow-up) is NOT a substring match even though it is
-    exactly the hazard this gate exists to catch — a fresh `make bootstrap`
-    would still recreate the `infra` Application M4 deleted by hand, just
-    pointed at a pinned context instead of the ambient one.
-    """
-    tree = a_copy_of_the_tree(tmp_path)
-    makefile = tree / "Makefile"
-    text = makefile.read_text()
-    # Re-insert the line under `bootstrap:`, the same spot it was deleted from.
-    # `kubectl(?: --context \S+)?` tolerates the `--context $(KUBE_CONTEXT)`
-    # pin every kubectl in this target now carries (ledger 1228 follow-up) —
-    # the anchor is the ARGOCD_REPO apply, not the exact flags beside it.
-    mutated = re.sub(
-        r"(\n\tkubectl(?: --context \S+)? apply -f \$\(ARGOCD_REPO\)/projects/root\.yaml\n)",
-        r"\1\t" + restored_line + "\n",
-        text,
-        count=1,
-    )
-    assert mutated != text, "the anchor line this mutation inserts after is gone — update the regex"
-    makefile.write_text(mutated)
-    assert makefile_applies_infra_apps(tree) is True
 
 
 @pytest.mark.parametrize(

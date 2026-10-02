@@ -16,10 +16,14 @@ responsibility lives now.
 | Decisions (D-numbers, ADRs)                                                                                                                                                           | [`yadgarhq/docs`](https://github.com/yadgarhq/docs)                                                                                |
 | The kind cluster itself                                                                                                                                                               | the `nix` repository (`modules/nixos/kind.nix`) — unchanged; it was never declared here                                            |
 
-`MIGRATION_NOTES.md` and the `Makefile` stay in this repository as the
-historical record of the commands it actually ran, but they are frozen:
-`yadgarhq/argocd` carries the live, maintained copy of `make secrets` and
-`make bootstrap` (`argocd#59`). Point any future change at `argocd`, not
-here.
+`MIGRATION_NOTES.md` stays, as the historical record of the commands this
+repository once ran — but it is history, not instructions: the `Makefile`
+it documents is deleted, along with the two test files that guarded it.
+Three of its sections ("The identity encryption keys", "The development
+TLS edge", "The `estate-front` runner") were copied, byte-faithfully, into
+`yadgarhq/argocd`'s own `MIGRATION_NOTES.md` (`argocd#59`), because that
+repository's `Makefile` cites them by name. `yadgarhq/argocd` carries the
+one live, runnable copy of `make secrets` and `make bootstrap`; point any
+future change there.
 
 This repository is archived, read-only, once this merges.

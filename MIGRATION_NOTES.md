@@ -12,11 +12,22 @@ through M5, ending with M5 (this PR) deleting `infra/apps.yaml`, `infra/tls/`,
 section above that names an `infra/` path is historical/runbook content,
 describing a step as it stood at the time it was written — most of those
 paths were already gone before M5, and the rest left with it. Sections that
-`yadgarhq/argocd` cites by name (e.g. "The development TLS edge", "The
-`estate-front` runner", "Move the development domain to `yadgar.internal`")
-stay in place rather than move, deliberately: they are the runbook a human
-still reads to operate the cluster, and `yadgarhq/argocd`'s own comments point
-here for them.
+`yadgarhq/argocd` cites by name (e.g. "Move the development domain to
+`yadgar.internal`", cited from `applications/tls.yaml` and
+`manifests/tls/clusterissuer.yaml`) stay in place rather than move,
+deliberately: they are the runbook a human still reads to operate the
+cluster, and `yadgarhq/argocd`'s own comments point here for them.
+
+**Three sections now live in both repositories.** "The identity encryption
+keys", "The development TLS edge" and "The `estate-front` runner" are the
+three the Makefile's own `secrets` target cited by name in its error
+messages. Once that Makefile moved to `yadgarhq/argocd` (`argocd#59`,
+ADR-0803), its citations needed a copy to resolve there too, so `deploy#85`
+moved byte-faithful copies of all three into `yadgarhq/argocd`'s own
+`MIGRATION_NOTES.md`. This copy, here, is no longer the live runbook for
+those three — it is kept as history, unchanged since the move. `argocd`'s
+copy is the one a reader following a citation from a live Makefile actually
+needs.
 
 ## A first sync needs no step from this document, because `make bootstrap` takes it
 
