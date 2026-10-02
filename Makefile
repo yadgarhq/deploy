@@ -20,6 +20,15 @@ SHELL := /usr/bin/env bash
 ARGOCD_CHART_VERSION := 8.6.1
 # Only for the one-time handover apply. Everything after arrives through git.
 ARGOCD_REPO ?= ../argocd
+# `secrets` and `bootstrap` write data-bearing Secrets, a namespace and the
+# root Application — every one of them pinned here rather than left to
+# whatever `kubectl config current-context` happens to read, because none of
+# these commands refuses on a context mismatch: a Secret meant for
+# `kind-yadgar` applies just as quietly against whatever cluster the
+# operator's shell was last pointed at. `:=` so an exported shell variable
+# cannot retarget it; a caller targeting a different cluster says so on the
+# command line: `make KUBE_CONTEXT=<ctx> secrets`.
+KUBE_CONTEXT := kind-yadgar
 
 .PHONY: bootstrap secrets status ui password sync
 
@@ -46,7 +55,7 @@ ARGOCD_REPO ?= ../argocd
 # `last-applied-configuration` annotation a Secret already carries from
 # before this change — that one-time strip is ledger 1222, already done on
 # kind-yadgar; a cluster still carrying it needs the same strip once.
-SECRET_APPLY := kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
+SECRET_APPLY := kubectl --context $(KUBE_CONTEXT) apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
 
 # THE THREE SECRETS GITOPS CANNOT CARRY, loaded before anything syncs.
 #
@@ -94,11 +103,11 @@ SECRET_APPLY := kubectl apply --server-side --field-manager=yadgar-deploy --forc
 secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password. Idempotent.
 	@command -v op >/dev/null || { 		echo "The 1Password CLI (op) is not on PATH."; 		echo "All three secrets are data-bearing and live only there — see"; 		echo "MIGRATION_NOTES.md, 'The identity encryption keys', 'The development"; 		echo "TLS edge' and 'The estate-front runner'."; 		exit 1; }
 	@op account list >/dev/null 2>&1 || { 		echo "The 1Password CLI is not signed in. Run 'op signin' first."; 		exit 1; }
-	kubectl create namespace cert-manager \
-		--dry-run=client -o yaml | kubectl apply -f -
-	kubectl create namespace yadgar \
-		--dry-run=client -o yaml | kubectl apply -f -
-	kubectl create secret tls yadgar-dev-ca \
+	kubectl --context $(KUBE_CONTEXT) create namespace cert-manager \
+		--dry-run=client -o yaml | kubectl --context $(KUBE_CONTEXT) apply -f -
+	kubectl --context $(KUBE_CONTEXT) create namespace yadgar \
+		--dry-run=client -o yaml | kubectl --context $(KUBE_CONTEXT) apply -f -
+	kubectl --context $(KUBE_CONTEXT) create secret tls yadgar-dev-ca \
 		--namespace cert-manager \
 		--cert <(op read "op://Private/yadgar-dev-ca/certificate") \
 		--key  <(op read "op://Private/yadgar-dev-ca/private key") \
@@ -108,13 +117,13 @@ secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password
 	 ( umask 077; \
 	   op document get "yadgar iam — encryption key"  --out-file "$$d/encryption.key"; \
 	   op document get "yadgar iam — blind index key" --out-file "$$d/blind-index.key" ); \
-	 kubectl create secret generic iam-keys \
+	 kubectl --context $(KUBE_CONTEXT) create secret generic iam-keys \
 		--namespace yadgar \
 		--from-file=encryption.key="$$d/encryption.key" \
 		--from-file=blind-index.key="$$d/blind-index.key" \
 		--dry-run=client -o yaml | $(SECRET_APPLY)
-	kubectl create namespace estate-front \
-		--dry-run=client -o yaml | kubectl apply -f -
+	kubectl --context $(KUBE_CONTEXT) create namespace estate-front \
+		--dry-run=client -o yaml | kubectl --context $(KUBE_CONTEXT) apply -f -
 	@op document get "yadgar — yadgarhq-bot App private key" >/dev/null 2>&1 || { \
 		echo "The 1Password document 'yadgar — yadgarhq-bot App private key' was not found."; \
 		echo "It is the yadgarhq-bot App private key the ARC listener authenticates"; \
@@ -125,7 +134,7 @@ secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password
 	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.pem 2>/dev/null || true; rmdir "$$d" || true' EXIT; \
 	 ( umask 077; \
 	   op document get "yadgar — yadgarhq-bot App private key" --out-file "$$d/yadgarhq-bot.pem" ); \
-	 kubectl create secret generic estate-runner-github \
+	 kubectl --context $(KUBE_CONTEXT) create secret generic estate-runner-github \
 		--namespace estate-front \
 		--from-literal=github_app_id=4814165 \
 		--from-literal=github_app_installation_id=158692002 \
@@ -144,18 +153,18 @@ bootstrap: secrets ## Install Argo CD into the running cluster, then hand contro
 		exit 1; }
 	helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 	helm repo update >/dev/null
-	helm upgrade --install argocd argo/argo-cd \
+	helm --kube-context $(KUBE_CONTEXT) upgrade --install argocd argo/argo-cd \
 		--version $(ARGOCD_CHART_VERSION) \
 		--namespace argocd --create-namespace \
 		--set configs.params."server\.insecure"=true \
 		--set dex.enabled=false \
 		--set notifications.enabled=false \
 		--wait
-	kubectl -n argocd create secret generic github-scm \
+	kubectl --context $(KUBE_CONTEXT) -n argocd create secret generic github-scm \
 		--from-literal=token="$$GITHUB_TOKEN" \
 		--dry-run=client -o yaml | $(SECRET_APPLY)
 	@echo "--- Argo CD up. Handing control to git. ---"
-	kubectl apply -f $(ARGOCD_REPO)/projects/root.yaml
+	kubectl --context $(KUBE_CONTEXT) apply -f $(ARGOCD_REPO)/projects/root.yaml
 	@echo "Argo now manages its own values from yadgarhq/argocd. make ui / make password."
 
 ## The initial install uses --set, not the values file in yadgarhq/argocd. That
@@ -177,13 +186,13 @@ status:
 ## by the nix unit that creates the cluster.
 
 ui: ## http://localhost:8081 — admin / `make password`
-	kubectl -n argocd port-forward svc/argocd-server 8081:80
+	kubectl --context $(KUBE_CONTEXT) -n argocd port-forward svc/argocd-server 8081:80
 
 password:
-	@kubectl -n argocd get secret argocd-initial-admin-secret \
+	@kubectl --context $(KUBE_CONTEXT) -n argocd get secret argocd-initial-admin-secret \
 		-o jsonpath='{.data.password}' | base64 -d; echo
 
 sync: ## Force a refresh without waiting for the reconciliation interval.
 	@test -n "$(APP)" || (echo "usage: make sync APP=<application-name>"; exit 1)
-	kubectl -n argocd annotate application $(APP) \
+	kubectl --context $(KUBE_CONTEXT) -n argocd annotate application $(APP) \
 		argocd.argoproj.io/refresh=hard --overwrite
