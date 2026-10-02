@@ -31,15 +31,21 @@ ARGOCD_REPO ?= ../argocd
 # payload sitting in the cluster a second time (ledger 1225). Server-side
 # apply tracks ownership per field manager instead and writes no such
 # annotation. Every Secret this Makefile creates already exists on a
-# bootstrapped cluster, applied client-side before this change, so its
-# fields are already owned by the `kubectl-client-side-apply` manager — but
-# that alone does NOT need `--force-conflicts`: re-applying the SAME value
-# server-side makes `yadgar-deploy` a co-owner with no conflict (measured
-# against a live `iam-keys` Secret, 2026-10-02). `--force-conflicts` is
-# required for the ROTATION case this target's own comment above already
-# documents as intended behaviour: a CHANGED value 409s against the field
-# `kubectl-client-side-apply` still owns, and `--force-conflicts` is what
-# lets the rotation win.
+# bootstrapped cluster, so its fields are already owned by a PRIOR,
+# non-server-side manager — `kubectl-create` for `yadgar-dev-ca`,
+# `kubectl-client-side-apply` for the other three (measured via
+# `managedFields` on kind-yadgar, 2026-10-02) — but that alone does NOT need
+# `--force-conflicts`: re-applying the SAME value server-side makes
+# `yadgar-deploy` a co-owner with no conflict (measured against a live
+# `iam-keys` Secret, owned by `kubectl-client-side-apply`, 2026-10-02).
+# `--force-conflicts` is required for the ROTATION case this target's own
+# comment above already documents as intended behaviour: a CHANGED value
+# 409s against the field the prior manager still owns, and
+# `--force-conflicts` is what lets the rotation win. Switching to
+# server-side apply here does NOT retroactively remove a
+# `last-applied-configuration` annotation a Secret already carries from
+# before this change — that one-time strip is ledger 1222, already done on
+# kind-yadgar; a cluster still carrying it needs the same strip once.
 SECRET_APPLY := kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
 
 # THE THREE SECRETS GITOPS CANNOT CARRY, loaded before anything syncs.
