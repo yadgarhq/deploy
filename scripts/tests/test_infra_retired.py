@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from pathlib import Path
 
 import pytest
@@ -97,7 +98,7 @@ def infra_application_names(tree: Path) -> list[str]:
 
 
 _APPLY_INFRA_APPS_RE = re.compile(
-    r"kubectl(?:\s+-\S+(?:[ =]\S+)?)*\s+apply\s+-f\s+infra/apps\.yaml\b"
+    r"kubectl(?:\s+-[^\s=]+(?:=\S+|\s+[^\s-]\S*)?)*\s+apply\s+-f\s+infra/apps\.yaml\b"
 )
 
 
@@ -107,12 +108,26 @@ def makefile_applies_infra_apps(tree: Path) -> bool:
     A regex, not a plain substring search — pinned or not, the failure this
     gate exists for is the LINE coming back under a renamed or different
     target, not only under `bootstrap`, and not only in its original
-    unpinned form. `(?:\\s+-\\S+(?:[ =]\\S+)?)*` tolerates ANY number of
-    flags — `--context $(KUBE_CONTEXT)`, `-n argocd`, in either order —
-    landing between `kubectl` and `apply`, not only the one flag this
-    Makefile happens to carry today (ledger 1228 follow-up: a narrower
-    `--context`-only version of this regex missed a restored line that also
-    carried `-n argocd`).
+    unpinned form. The flag-skipping group tolerates ANY number of flags —
+    `--context $(KUBE_CONTEXT)` or `--context=$(KUBE_CONTEXT)`, `-n argocd`,
+    in either order — landing between `kubectl` and `apply`, not only the
+    one flag this Makefile happens to carry today (ledger 1228 follow-up: a
+    narrower `--context`-only version of this regex missed a restored line
+    that also carried `-n argocd`).
+
+    THE GRAMMAR IS DELIBERATELY UNAMBIGUOUS, after a CodeQL `py/redos`
+    finding on an earlier, looser version of this same regex
+    (`-\\S+(?:[ =]\\S+)?`): a flag's NAME (`-[^\\s=]+`) cannot contain `=`,
+    and a space-separated VALUE (`\\s+[^\\s-]\\S*`) cannot start with `-` —
+    so a flag's name and a following value can never both claim the same
+    characters, and the regex engine has exactly one way to parse any input,
+    never two. The old grammar let `-\\S+` swallow an `=` that `[ =]\\S+`
+    could also have matched, and repeating that ambiguity under `(?:...)*`
+    is what let backtracking blow up: measured, `kubectl` + `' -!' * 40`
+    (no trailing match, forcing a full backtrack search) took over 5 seconds
+    against the old pattern. The same input against this one is sub-
+    millisecond, proven by `test_the_gate_handles_an_adversarial_string_fast`
+    below.
     """
     makefile = tree / "Makefile"
     if not makefile.is_file():
@@ -207,6 +222,7 @@ def test_a_restored_application_as_json_reddens(tmp_path: Path) -> None:
 
 
 PINNED_APPLY_INFRA_APPS = "kubectl --context $(KUBE_CONTEXT) apply -f infra/apps.yaml"
+PINNED_EQUALS_APPLY_INFRA_APPS = "kubectl --context=$(KUBE_CONTEXT) apply -f infra/apps.yaml"
 PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS = (
     "kubectl --context $(KUBE_CONTEXT) -n argocd apply -f infra/apps.yaml"
 )
@@ -214,8 +230,13 @@ PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS = (
 
 @pytest.mark.parametrize(
     "restored_line",
-    [APPLY_INFRA_APPS, PINNED_APPLY_INFRA_APPS, PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS],
-    ids=["unpinned", "pinned", "pinned-with-namespace-flag"],
+    [
+        APPLY_INFRA_APPS,
+        PINNED_APPLY_INFRA_APPS,
+        PINNED_EQUALS_APPLY_INFRA_APPS,
+        PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS,
+    ],
+    ids=["unpinned", "pinned", "pinned-equals-form", "pinned-with-namespace-flag"],
 )
 def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path, restored_line: str) -> None:
     """Mutation check: restore the Makefile's apply line, pinned or not; the gate catches it.
@@ -243,3 +264,41 @@ def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path, restored_line: 
     assert mutated != text, "the anchor line this mutation inserts after is gone — update the regex"
     makefile.write_text(mutated)
     assert makefile_applies_infra_apps(tree) is True
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        # A flag's VALUE happens to be the literal word "apply", followed by
+        # the real subcommand later — must not be mistaken for it, and must
+        # not stop the scan from finding the real one.
+        ("kubectl --selector apply -n argocd apply -f infra/apps.yaml", True),
+        # Same flag value, but no real `apply -f infra/apps.yaml` anywhere —
+        # must NOT match on the flag's value alone.
+        ("kubectl --selector apply -n argocd get pods", False),
+        ("kubectl --selector apply", False),
+    ],
+)
+def test_a_flag_value_of_apply_is_not_mistaken_for_the_subcommand(line: str, expected: bool) -> None:
+    """`--selector apply` names a value, not the `apply` subcommand this gate looks for."""
+    assert bool(_APPLY_INFRA_APPS_RE.search(line)) is expected, line
+
+
+def test_the_gate_handles_an_adversarial_string_fast() -> None:
+    """A CodeQL py/redos regression check: no catastrophic backtracking.
+
+    The PREVIOUS grammar (`-\\S+(?:[ =]\\S+)?`) let a flag's name and a
+    following value both claim the same characters, and repeating that
+    ambiguity under `(?:...)*` exploded: `'kubectl' + ' -!' * 40` (40 fake
+    flags, no trailing match so the engine must exhaust every split before
+    failing) took over 5 seconds against it. The CURRENT grammar admits only
+    one parse of any input, so a 50,000-character version of the same
+    adversarial string — a thousand times longer — must still resolve in
+    well under a second.
+    """
+    adversarial = "kubectl" + " -!" * 20000
+    start = time.monotonic()
+    result = _APPLY_INFRA_APPS_RE.search(adversarial)
+    elapsed = time.monotonic() - start
+    assert result is None
+    assert elapsed < 0.1, f"took {elapsed * 1000:.1f} ms on a 50k-char adversarial string — possible backtracking regression"
