@@ -97,7 +97,7 @@ def infra_application_names(tree: Path) -> list[str]:
 
 
 _APPLY_INFRA_APPS_RE = re.compile(
-    r"kubectl(?:\s+--context(?:=|\s+)\S+)?\s+apply\s+-f\s+infra/apps\.yaml\b"
+    r"kubectl(?:\s+-\S+(?:[ =]\S+)?)*\s+apply\s+-f\s+infra/apps\.yaml\b"
 )
 
 
@@ -107,9 +107,12 @@ def makefile_applies_infra_apps(tree: Path) -> bool:
     A regex, not a plain substring search — pinned or not, the failure this
     gate exists for is the LINE coming back under a renamed or different
     target, not only under `bootstrap`, and not only in its original
-    unpinned form. `(?:\\s+--context(?:=|\\s+)\\S+)?` tolerates the
-    `--context $(KUBE_CONTEXT)` pin every kubectl in this Makefile now
-    carries (ledger 1228 follow-up) landing between `kubectl` and `apply`.
+    unpinned form. `(?:\\s+-\\S+(?:[ =]\\S+)?)*` tolerates ANY number of
+    flags — `--context $(KUBE_CONTEXT)`, `-n argocd`, in either order —
+    landing between `kubectl` and `apply`, not only the one flag this
+    Makefile happens to carry today (ledger 1228 follow-up: a narrower
+    `--context`-only version of this regex missed a restored line that also
+    carried `-n argocd`).
     """
     makefile = tree / "Makefile"
     if not makefile.is_file():
@@ -204,12 +207,15 @@ def test_a_restored_application_as_json_reddens(tmp_path: Path) -> None:
 
 
 PINNED_APPLY_INFRA_APPS = "kubectl --context $(KUBE_CONTEXT) apply -f infra/apps.yaml"
+PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS = (
+    "kubectl --context $(KUBE_CONTEXT) -n argocd apply -f infra/apps.yaml"
+)
 
 
 @pytest.mark.parametrize(
     "restored_line",
-    [APPLY_INFRA_APPS, PINNED_APPLY_INFRA_APPS],
-    ids=["unpinned", "pinned"],
+    [APPLY_INFRA_APPS, PINNED_APPLY_INFRA_APPS, PINNED_WITH_NAMESPACE_APPLY_INFRA_APPS],
+    ids=["unpinned", "pinned", "pinned-with-namespace-flag"],
 )
 def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path, restored_line: str) -> None:
     """Mutation check: restore the Makefile's apply line, pinned or not; the gate catches it.

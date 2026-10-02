@@ -115,7 +115,7 @@ Neither password reaches 1Password, and that is the intended trade (ADR-0517):
 nobody reads them, and losing one costs a rotation rather than data.
 
 ```bash
-kubectl -n yadgar logs job/bootstrap-secrets
+kubectl --context kind-yadgar -n yadgar logs job/bootstrap-secrets
 # valkey-password: created            <- first sync
 # valkey-password: already exists, left untouched   <- every sync after it
 ```
@@ -126,7 +126,7 @@ The check that matters, and the only one that cannot pass against the old
 configuration:
 
 ```bash
-kubectl -n yadgar run valkey-probe --rm -it --restart=Never \
+kubectl --context kind-yadgar -n yadgar run valkey-probe --rm -it --restart=Never \
   --image=valkey/valkey:9.1.1 -- \
   valkey-cli -h valkey -p 6379 ping
 ```
@@ -144,13 +144,16 @@ cannot update one, which is what makes a resync safe; the same limit means it
 cannot rotate one either. A rotation is:
 
 ```bash
-d=$(mktemp -d)
-( umask 077; printf %s "$(openssl rand -base64 33)" > "$d/pw" )
-kubectl --context kind-yadgar -n yadgar create secret generic valkey-password \
-  --from-file=password="$d/pw" \
-  --dry-run=client -o yaml | kubectl --context kind-yadgar apply --server-side \
-  --field-manager=yadgar-deploy --force-conflicts -f -
-shred -u "$d/pw"; rmdir "$d"
+(
+  set -euo pipefail
+  d=$(mktemp -d)
+  trap 'shred -u "$d/pw" 2>/dev/null; rmdir "$d"' EXIT
+  umask 077; printf %s "$(openssl rand -base64 33)" > "$d/pw"
+  kubectl --context kind-yadgar -n yadgar create secret generic valkey-password \
+    --from-file=password="$d/pw" \
+    --dry-run=client -o yaml | kubectl --context kind-yadgar apply --server-side \
+    --field-manager=yadgar-deploy --force-conflicts -f -
+)
 ```
 
 and then rolling **both** Deployments. The next sync sees the Secret present,
@@ -185,7 +188,7 @@ sudo nixos-rebuild switch          # picks up the new kind.nix
 
 KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name yadgar
 sudo systemctl restart kind-yadgar-cluster
-kubectl get nodes                  # 3 nodes Ready, on the new mapping
+kubectl --context kind-yadgar get nodes                  # 3 nodes Ready, on the new mapping
 ```
 
 Everything in the cluster is GitOps, so Argo rebuilds it — and since ADR-0517
@@ -308,9 +311,9 @@ Copy them out before anything else destroys them:
 ```bash
 cd "$(mktemp -d)"
 umask 077
-kubectl -n yadgar get secret iam-keys \
+kubectl --context kind-yadgar -n yadgar get secret iam-keys \
   -o jsonpath='{.data.encryption\.key}' | base64 -d > encryption.key
-kubectl -n yadgar get secret iam-keys \
+kubectl --context kind-yadgar -n yadgar get secret iam-keys \
   -o jsonpath='{.data.blind-index\.key}' | base64 -d > blind-index.key
 ```
 
@@ -319,8 +322,8 @@ Then step 2 above, and `shred -u` both files.
 ### Check it took
 
 ```bash
-kubectl -n yadgar get secret iam-keys -o jsonpath='{.data}' | grep -o 'encryption.key'
-kubectl -n yadgar logs deploy/iam | grep 'crypto keys loaded'
+kubectl --context kind-yadgar -n yadgar get secret iam-keys -o jsonpath='{.data}' | grep -o 'encryption.key'
+kubectl --context kind-yadgar -n yadgar logs deploy/iam | grep 'crypto keys loaded'
 ```
 
 A pod that cannot read them does not start and says why — that is D69's rule
@@ -349,10 +352,10 @@ reason for a human to hold it.
 is the material the cut-over needs, not the cut-over.
 
 ```bash
-kubectl -n yadgar get certificate
+kubectl --context kind-yadgar -n yadgar get certificate
 # each READY=True
 
-kubectl -n yadgar get secret iam-tls -o jsonpath='{.data.tls\.crt}' \
+kubectl --context kind-yadgar -n yadgar get secret iam-tls -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text | grep -A1 'Subject Alternative Name'
 # DNS:iam, DNS:iam.yadgar, DNS:iam.yadgar.svc, DNS:iam.yadgar.svc.cluster.local
 ```
@@ -403,21 +406,21 @@ because it shortens a wait.
 ### 1. Watch the certificate get issued
 
 ```bash
-kubectl -n yadgar get certificate project-db-tls -w
+kubectl --context kind-yadgar -n yadgar get certificate project-db-tls -w
 # READY=True, normally within seconds of the sync
 ```
 
 If it does not go Ready, read the reason rather than re-applying:
 
 ```bash
-kubectl -n yadgar describe certificate project-db-tls
-kubectl -n yadgar get certificaterequest | grep project-db
+kubectl --context kind-yadgar -n yadgar describe certificate project-db-tls
+kubectl --context kind-yadgar -n yadgar get certificaterequest | grep project-db
 ```
 
 ### 2. Confirm the Secret carries the three keys the two sides read
 
 ```bash
-kubectl -n yadgar get secret project-db-tls \
+kubectl --context kind-yadgar -n yadgar get secret project-db-tls \
   -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
 # ca.crt
 # tls.crt
@@ -430,7 +433,7 @@ The pod selects `tls.crt` and `tls.key` and never `ca.crt`; a future CALLER of
 ### 3. Confirm the SANs are the Service name and no IP
 
 ```bash
-kubectl -n yadgar get secret project-db-tls -o jsonpath='{.data.tls\.crt}' \
+kubectl --context kind-yadgar -n yadgar get secret project-db-tls -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text \
   | grep -A1 'Subject Alternative Name'
 # DNS:project-db, DNS:project-db.yadgar, DNS:project-db.yadgar.svc,
@@ -438,7 +441,7 @@ kubectl -n yadgar get secret project-db-tls -o jsonpath='{.data.tls\.crt}' \
 ```
 
 ```bash
-kubectl -n yadgar get secret project-db-tls -o jsonpath='{.data.tls\.crt}' \
+kubectl --context kind-yadgar -n yadgar get secret project-db-tls -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text | grep -A1 'Extended Key Usage'
 # TLS Web Server Authentication   <- and NOT TLS Web Client Authentication
 ```
@@ -456,14 +459,14 @@ restart with no action from you — up to about five minutes of backoff. A rollo
 restart only makes it prompt:
 
 ```bash
-kubectl -n yadgar rollout restart deployment/project-db      # optional
-kubectl -n yadgar rollout status deployment/project-db --timeout=300s
-kubectl -n yadgar get pods -l app=project-db
+kubectl --context kind-yadgar -n yadgar rollout restart deployment/project-db      # optional
+kubectl --context kind-yadgar -n yadgar rollout status deployment/project-db --timeout=300s
+kubectl --context kind-yadgar -n yadgar get pods -l app=project-db
 # 2 pods, 1/1 Running
 ```
 
 ```bash
-kubectl -n yadgar logs deployment/project-db | grep listening
+kubectl --context kind-yadgar -n yadgar logs deployment/project-db | grep listening
 # "project-db listening" with tls=true and a non-zero watching count
 ```
 
@@ -476,7 +479,7 @@ certificate, so a renewal 58 days from now actually reaches the process.
 ### 5. Confirm the renewal instant did not collide — THIS ONE IS NOT OPTIONAL
 
 ```bash
-kubectl -n yadgar get certificate \
+kubectl --context kind-yadgar -n yadgar get certificate \
   -o custom-columns='NAME:.metadata.name,RENEWAL:.status.renewalTime' \
   --sort-by=.status.renewalTime
 ```
@@ -517,7 +520,7 @@ computed from today's `notAfter` dissolves at the first renewal. Delete the
 Secret and let cert-manager re-issue at a different second instead:
 
 ```bash
-kubectl -n yadgar delete secret project-db-tls
+kubectl --context kind-yadgar -n yadgar delete secret project-db-tls
 # cert-manager re-issues within a reconcile; then re-run the command above
 ```
 
@@ -573,21 +576,21 @@ whole of the fix. The steps below CHECK it.
 ### 1. Watch both certificates get issued
 
 ```bash
-kubectl -n yadgar get certificate project-tls project-client-tls -w
+kubectl --context kind-yadgar -n yadgar get certificate project-tls project-client-tls -w
 # READY=True for both, normally within seconds of the sync
 ```
 
 If either does not go Ready, read the reason rather than re-applying:
 
 ```bash
-kubectl -n yadgar describe certificate project-tls
-kubectl -n yadgar get certificaterequest | grep project
+kubectl --context kind-yadgar -n yadgar describe certificate project-tls
+kubectl --context kind-yadgar -n yadgar get certificaterequest | grep project
 ```
 
 ### 2. Confirm each Secret carries the three keys the two sides read
 
 ```bash
-kubectl -n yadgar get secret project-tls \
+kubectl --context kind-yadgar -n yadgar get secret project-tls \
   -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
 # ca.crt
 # tls.crt
@@ -595,7 +598,7 @@ kubectl -n yadgar get secret project-tls \
 ```
 
 ```bash
-kubectl -n yadgar get secret project-client-tls \
+kubectl --context kind-yadgar -n yadgar get secret project-client-tls \
   -o go-template='{{range $k,$v := .data}}{{$k}}{{"\n"}}{{end}}'
 # ca.crt
 # tls.crt
@@ -610,7 +613,7 @@ Do not print the values.
 ### 3. Confirm the SANs, and confirm the extended key usages point OPPOSITE ways
 
 ```bash
-kubectl -n yadgar get secret project-tls -o jsonpath='{.data.tls\.crt}' \
+kubectl --context kind-yadgar -n yadgar get secret project-tls -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text \
   | grep -A1 'Subject Alternative Name'
 # DNS:project, DNS:project.yadgar, DNS:project.yadgar.svc,
@@ -618,18 +621,18 @@ kubectl -n yadgar get secret project-tls -o jsonpath='{.data.tls\.crt}' \
 ```
 
 ```bash
-kubectl -n yadgar get secret project-client-tls -o jsonpath='{.data.tls\.crt}' \
+kubectl --context kind-yadgar -n yadgar get secret project-client-tls -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text \
   | grep -A1 'Subject Alternative Name'
 # DNS:project-caller     <- and NOT DNS:project
 ```
 
 ```bash
-kubectl -n yadgar get secret project-tls -o jsonpath='{.data.tls\.crt}' \
+kubectl --context kind-yadgar -n yadgar get secret project-tls -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text | grep -A1 'Extended Key Usage'
 # TLS Web Server Authentication   <- and NOT TLS Web Client Authentication
 
-kubectl -n yadgar get secret project-client-tls -o jsonpath='{.data.tls\.crt}' \
+kubectl --context kind-yadgar -n yadgar get secret project-client-tls -o jsonpath='{.data.tls\.crt}' \
   | base64 -d | openssl x509 -noout -text | grep -A1 'Extended Key Usage'
 # TLS Web Client Authentication   <- and NOT TLS Web Server Authentication
 ```
@@ -654,7 +657,7 @@ this merges. Run it at step 7 of the onboarding sequence instead, once the
 module is tagged and the `yadgar-deployable` topic is added:
 
 ```bash
-kubectl -n yadgar logs deployment/project | grep listening
+kubectl --context kind-yadgar -n yadgar logs deployment/project | grep listening
 # "project listening" with tls=true and a non-zero watching count
 ```
 
@@ -673,7 +676,7 @@ thirty days after the replacement was already on disk.
 ### 5. Confirm the renewal instants did not collide — THIS ONE IS NOT OPTIONAL
 
 ```bash
-kubectl -n yadgar get certificate \
+kubectl --context kind-yadgar -n yadgar get certificate \
   -o custom-columns='NAME:.metadata.name,RENEWAL:.status.renewalTime' \
   --sort-by=.status.renewalTime
 ```
@@ -729,7 +732,7 @@ alignment computed from today's `notAfter` dissolves at the first renewal.
 Delete the Secret and let cert-manager re-issue at a different second:
 
 ```bash
-kubectl -n yadgar delete secret project-tls          # and/or project-client-tls
+kubectl --context kind-yadgar -n yadgar delete secret project-tls          # and/or project-client-tls
 # cert-manager re-issues within a reconcile; then re-run the command above
 ```
 
@@ -1600,7 +1603,7 @@ the cancellations, because the occupant will then finish and free the group.
 this table:**
 
 ```bash
-kubectl -n arc-systems logs deploy/arc-gha-rs-controller --tail=300 | grep -i 'failed to resolve'
+kubectl --context kind-yadgar -n arc-systems logs deploy/arc-gha-rs-controller --tail=300 | grep -i 'failed to resolve'
 # Failed to initialize Actions service client for creating a new runner scale set
 # failed to resolve app config: failed to get kubernetes secret
 ```
@@ -1623,8 +1626,8 @@ leaves this Application reporting **Synced and Healthy**.
 The evidence is in `arc-systems`, the controller's namespace, not in the runner's:
 
 ```bash
-kubectl -n arc-systems logs deploy/arc-gha-rs-controller
-kubectl -n arc-systems get pods   # an AutoscalingListener for estate-front, or none
+kubectl --context kind-yadgar -n arc-systems logs deploy/arc-gha-rs-controller
+kubectl --context kind-yadgar -n arc-systems get pods   # an AutoscalingListener for estate-front, or none
 ```
 
 What that failure looks like exactly is not written down here, because seeing it
@@ -1686,7 +1689,7 @@ is not evidence here. What is evidence is the digest a runner pod actually
 resolved. Dispatch a smoke run, and while it holds a pod:
 
 ```bash
-kubectl -n estate-front get pods \
+kubectl --context kind-yadgar -n estate-front get pods \
   -o jsonpath='{range .items[*]}{.status.containerStatuses[*].imageID}{"\n"}{end}'
 ```
 
@@ -1979,7 +1982,7 @@ The order for a person, one step at a time:
 2. Confirm the namespace is actually empty before going on:
 
    ```bash
-   kubectl -n estate-front get autoscalingrunnersets,serviceaccounts,roles,rolebindings
+   kubectl --context kind-yadgar -n estate-front get autoscalingrunnersets,serviceaccounts,roles,rolebindings
    ```
 
    Anything still `Terminating` means the controller has not finished. Wait for
@@ -2141,7 +2144,7 @@ mechanism and for why it is not a `make secrets` block.
 retrievable at least once through a documented command. This is that command:**
 
 ```bash
-kubectl -n yadgar get secret admin-bootstrap-token -o jsonpath='{.data.token}' | base64 -d; echo
+kubectl --context kind-yadgar -n yadgar get secret admin-bootstrap-token -o jsonpath='{.data.token}' | base64 -d; echo
 ```
 
 (the trailing `echo` is only because the token itself carries no newline, by
