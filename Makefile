@@ -23,6 +23,21 @@ ARGOCD_REPO ?= ../argocd
 
 .PHONY: bootstrap secrets status ui password sync
 
+# Every Secret write below goes through server-side apply, never the
+# client-side `kubectl apply -f -` the namespace and root-manifest lines
+# still use. Client-side apply stamps the object with the
+# `kubectl.kubernetes.io/last-applied-configuration` annotation, which holds
+# a full copy of the object's data — for a Secret, that is the cleartext
+# payload sitting in the cluster a second time (ledger 1225). Server-side
+# apply tracks ownership per field manager instead and writes no such
+# annotation. `--force-conflicts` is required: every Secret this Makefile
+# creates already exists on a bootstrapped cluster, applied client-side
+# before this change, so its fields are all owned by the
+# `kubectl-client-side-apply` manager. The first server-side apply after
+# this switch reclaims those fields; without `--force-conflicts` it would
+# 409 instead.
+SECRET_APPLY := kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
+
 # THE THREE SECRETS GITOPS CANNOT CARRY, loaded before anything syncs.
 #
 # All are DATA-BEARING and none is auto-generated: `yadgar-dev-ca` is the
@@ -54,11 +69,13 @@ ARGOCD_REPO ?= ../argocd
 # step, so a missing 1Password item fails while the cluster is still empty
 # rather than half-built.
 #
-# Idempotent: every write is `--dry-run=client | kubectl apply`, so re-running on
-# a cluster that already holds them is a no-op rather than an error — though a
-# CHANGED source value is a rotation rather than a no-op, which is the intended
-# behaviour. After rotating `estate-runner-github`, delete the listener pod in
-# `arc-systems`: it does not re-read the Secret on its own.
+# Idempotent: every write is `--dry-run=client -o yaml`, piped into either
+# `kubectl apply -f -` (the two namespaces) or `$(SECRET_APPLY)` (the three
+# Secrets), so re-running on a cluster that already holds them is a no-op
+# rather than an error — though a CHANGED source value is a rotation rather
+# than a no-op, which is the intended behaviour. After rotating
+# `estate-runner-github`, delete the listener pod in `arc-systems`: it does
+# not re-read the Secret on its own.
 #
 # The three namespaces are created here because the Secrets need somewhere to
 # live before the Applications that own those namespaces have synced. Argo adopts
@@ -75,7 +92,7 @@ secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password
 		--namespace cert-manager \
 		--cert <(op read "op://Private/yadgar-dev-ca/certificate") \
 		--key  <(op read "op://Private/yadgar-dev-ca/private key") \
-		--dry-run=client -o yaml | kubectl apply -f -
+		--dry-run=client -o yaml | $(SECRET_APPLY)
 	@set -euo pipefail; \
 	 d=$$(mktemp -d); trap 'shred -u "$$d"/*.key 2>/dev/null || true; rmdir "$$d" || true' EXIT; \
 	 ( umask 077; \
@@ -85,7 +102,7 @@ secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password
 		--namespace yadgar \
 		--from-file=encryption.key="$$d/encryption.key" \
 		--from-file=blind-index.key="$$d/blind-index.key" \
-		--dry-run=client -o yaml | kubectl apply -f -
+		--dry-run=client -o yaml | $(SECRET_APPLY)
 	kubectl create namespace estate-front \
 		--dry-run=client -o yaml | kubectl apply -f -
 	@op document get "yadgar — yadgarhq-bot App private key" >/dev/null 2>&1 || { \
@@ -103,7 +120,7 @@ secrets: ## Load yadgar-dev-ca, iam-keys and estate-runner-github from 1Password
 		--from-literal=github_app_id=4814165 \
 		--from-literal=github_app_installation_id=158692002 \
 		--from-file=github_app_private_key="$$d/yadgarhq-bot.pem" \
-		--dry-run=client -o yaml | kubectl apply -f -
+		--dry-run=client -o yaml | $(SECRET_APPLY)
 	@echo "--- yadgar-dev-ca, iam-keys and estate-runner-github are loaded. ---"
 
 # Argo CD is installed by hand exactly once, because a GitOps controller cannot
@@ -126,7 +143,7 @@ bootstrap: secrets ## Install Argo CD into the running cluster, then hand contro
 		--wait
 	kubectl -n argocd create secret generic github-scm \
 		--from-literal=token="$$GITHUB_TOKEN" \
-		--dry-run=client -o yaml | kubectl apply -f -
+		--dry-run=client -o yaml | $(SECRET_APPLY)
 	@echo "--- Argo CD up. Handing control to git. ---"
 	kubectl apply -f $(ARGOCD_REPO)/projects/root.yaml
 	@echo "Argo now manages its own values from yadgarhq/argocd. make ui / make password."
