@@ -141,14 +141,18 @@ Read the output, do not script the exit status.
 
 **Still a human step, deliberately.** The bootstrap can create a Secret and
 cannot update one, which is what makes a resync safe; the same limit means it
-cannot rotate one either. A rotation is:
+cannot rotate one either. **`openssl` is not installed on this host** — get a
+shell that has it first (`nix shell nixpkgs#openssl`). A rotation is:
 
 ```bash
 (
   set -euo pipefail
   d=$(mktemp -d)
-  trap 'shred -u "$d/pw" 2>/dev/null; rmdir "$d"' EXIT
-  umask 077; printf %s "$(openssl rand -base64 33)" > "$d/pw"
+  trap 'shred -u "$d/pw" 2>/dev/null || true; rmdir "$d" || true' EXIT
+  umask 077
+  pw=$(openssl rand -base64 33)
+  [ "${#pw}" -eq 44 ] || { echo "password generation failed" >&2; exit 1; }
+  printf %s "$pw" > "$d/pw"; unset pw
   kubectl --context kind-yadgar -n yadgar create secret generic valkey-password \
     --from-file=password="$d/pw" \
     --dry-run=client -o yaml | kubectl --context kind-yadgar apply --server-side \
@@ -2265,7 +2269,7 @@ kubectl --context kind-yadgar -n yadgar get sts,svc,configmap,pdb -o json \
 
 If `nats-0` reports ANY connection, stop: a client still dials the old broker.
 If either port-forward prints "not ready after 30s", stop too: the precondition
-was not read. Check `kubectl -n yadgar get pod nats-0 yadgar-nats-0` and that
+was not read. Check `kubectl --context kind-yadgar -n yadgar get pod nats-0 yadgar-nats-0` and that
 no other process holds local ports 18222/18223, then re-run. Do not delete on
 an unread precondition.
 
