@@ -48,17 +48,21 @@ and `test_a_restored_bootstrap_apply_line_reddens` guarded, once `make
 secrets`/`make bootstrap` moved to `yadgarhq/argocd` (`argocd#59`, ADR-0803)
 and this repository owned no Application to recreate via `make bootstrap`
 any more. Both tests, and `makefile_applies_infra_apps` with the constants
-only they used, went with it; the `infra/` half of this file — the gate
-that no Application manifest is declared under `infra/` — is unaffected and
-still reads `infra/` directly, not the Makefile.
+only they used, went with it in that same PR; `_APPLY_INFRA_APPS_RE` and
+its two standalone tests (`test_a_flag_value_of_apply_is_not_mistaken_for_the_subcommand`,
+`test_the_gate_handles_an_adversarial_string_fast`) were kept a round
+longer on the theory that the regex's matching and ReDoS-safety were worth
+testing on their own — they are not: a regex with no consumer guards
+nothing, so `deploy#85`'s review fixes deleted all three together. The
+`infra/` half of this file — the gate that no Application manifest is
+declared under `infra/` — is unaffected and still reads `infra/` directly,
+not the Makefile.
 """
 
 from __future__ import annotations
 
 import json
-import re
 import shutil
-import time
 from pathlib import Path
 
 import pytest
@@ -100,18 +104,6 @@ def infra_application_names(tree: Path) -> list[str]:
         str((application.get("metadata") or {}).get("name"))
         for _, application in applications(tree)
     ]
-
-
-# Kept for `test_a_flag_value_of_apply_is_not_mistaken_for_the_subcommand`
-# and `test_the_gate_handles_an_adversarial_string_fast` below — both test
-# the regex's own matching and ReDoS-safety directly. The Makefile reader
-# that used to resolve this against a live `Makefile`,
-# `makefile_applies_infra_apps`, was deleted in `deploy#85` along with the
-# Makefile itself (`make secrets`/`make bootstrap` moved to
-# `yadgarhq/argocd`, `argocd#59`, ADR-0803).
-_APPLY_INFRA_APPS_RE = re.compile(
-    r"kubectl(?:\s+-[^\s=]+(?:=\S+|\s+[^\s-]\S*)?)*\s+apply\s+-f\s+infra/apps\.yaml\b"
-)
 
 
 def a_copy_of_the_tree(tmp_path: Path) -> Path:
@@ -190,41 +182,3 @@ def test_a_restored_application_as_json_reddens(tmp_path: Path) -> None:
     application = yaml.safe_load(RESTORED_APPLICATION.format(name="yadgar"))
     (tree / "infra" / "yadgar.json").write_text(json.dumps(application))
     assert infra_application_names(tree) == ["yadgar"]
-
-
-@pytest.mark.parametrize(
-    "line,expected",
-    [
-        # A flag's VALUE happens to be the literal word "apply", followed by
-        # the real subcommand later — must not be mistaken for it, and must
-        # not stop the scan from finding the real one.
-        ("kubectl --selector apply -n argocd apply -f infra/apps.yaml", True),
-        # Same flag value, but no real `apply -f infra/apps.yaml` anywhere —
-        # must NOT match on the flag's value alone.
-        ("kubectl --selector apply -n argocd get pods", False),
-        ("kubectl --selector apply", False),
-    ],
-)
-def test_a_flag_value_of_apply_is_not_mistaken_for_the_subcommand(line: str, expected: bool) -> None:
-    """`--selector apply` names a value, not the `apply` subcommand this gate looks for."""
-    assert bool(_APPLY_INFRA_APPS_RE.search(line)) is expected, line
-
-
-def test_the_gate_handles_an_adversarial_string_fast() -> None:
-    """A CodeQL py/redos regression check: no catastrophic backtracking.
-
-    The PREVIOUS grammar (`-\\S+(?:[ =]\\S+)?`) let a flag's name and a
-    following value both claim the same characters, and repeating that
-    ambiguity under `(?:...)*` exploded: `'kubectl' + ' -!' * 40` (40 fake
-    flags, no trailing match so the engine must exhaust every split before
-    failing) took over 5 seconds against it. The CURRENT grammar admits only
-    one parse of any input, so a 50,000-character version of the same
-    adversarial string — a thousand times longer — must still resolve in
-    well under a second.
-    """
-    adversarial = "kubectl" + " -!" * 20000
-    start = time.monotonic()
-    result = _APPLY_INFRA_APPS_RE.search(adversarial)
-    elapsed = time.monotonic() - start
-    assert result is None
-    assert elapsed < 0.1, f"took {elapsed * 1000:.1f} ms on a 50k-char adversarial string — possible backtracking regression"

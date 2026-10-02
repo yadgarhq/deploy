@@ -16,9 +16,10 @@ responsibility lives now.
 | Decisions (D-numbers, ADRs)                                                                                                                                                           | [`yadgarhq/docs`](https://github.com/yadgarhq/docs)                                                                                |
 | The kind cluster itself                                                                                                                                                               | the `nix` repository (`modules/nixos/kind.nix`) — unchanged; it was never declared here                                            |
 
-`MIGRATION_NOTES.md` stays, as the historical record of the commands this
-repository once ran — but it is history, not instructions: the `Makefile`
-it documents is deleted, along with the two test files that guarded it.
+`MIGRATION_NOTES.md` stays, as history — except the sections
+`yadgarhq/argocd` still cites, which stay the live runbook a human reads
+to operate the cluster (its own preamble says which). The `Makefile` it
+once documented is deleted, along with the two test files that guarded it.
 Three of its sections ("The identity encryption keys", "The development
 TLS edge", "The `estate-front` runner") were copied, byte-faithfully, into
 `yadgarhq/argocd`'s own `MIGRATION_NOTES.md` (`argocd#59`), because that

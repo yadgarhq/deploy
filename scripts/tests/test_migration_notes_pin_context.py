@@ -58,8 +58,9 @@ _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 
 # helm subcommands that touch no cluster — see yadgarhq/argocd's
 # test_secrets_pin_kube_context.py (the Makefile and this reasoning both
-# moved there, deploy#85) for the shared reasoning. Kept here too rather
-# than imported: this gate reads prose, that one reads a Makefile this
+# moved there in argocd#59; deploy#85 only deleted this repository's own
+# copy afterward) for the shared reasoning. Kept here too rather than
+# imported: this gate reads prose, that one reads a Makefile this
 # repository no longer carries, and the two files should be free to diverge
 # if either binary's subcommand list ever does.
 _HELM_LOCAL_SUBCOMMANDS = frozenset(
