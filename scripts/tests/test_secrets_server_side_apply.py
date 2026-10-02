@@ -15,11 +15,16 @@ stops a `make secrets` / `make bootstrap` rerun from re-adding it.
 THE FIX: every one of the four `kubectl create secret` pipelines now ends in
 `$(SECRET_APPLY)`, a Makefile variable defined once as `kubectl apply
 --server-side --field-manager=yadgar-deploy --force-conflicts -f -`.
-`--force-conflicts` matters here specifically: every Secret this Makefile
-writes already exists on a bootstrapped cluster, previously applied
-client-side, so the `kubectl-client-side-apply` field manager owns every
-field already. Without `--force-conflicts` the first server-side apply
-after this change 409s instead of taking over.
+`--force-conflicts` is NOT needed merely because every Secret this Makefile
+writes already exists, applied client-side, on a bootstrapped cluster —
+measured against a live `iam-keys` Secret (2026-10-02), re-applying the
+SAME value server-side with no `--force-conflicts` succeeds and makes
+`yadgar-deploy` a co-owner alongside `kubectl-client-side-apply`, no
+conflict. `--force-conflicts` is needed for the ROTATION case `make
+secrets`'s own comment already documents as intended behaviour: a CHANGED
+value 409s against the field `kubectl-client-side-apply` still owns, and
+`--force-conflicts` is what lets the rotation win (measured the same way,
+with a differing dummy value).
 
 THE GATE: every `kubectl ... create secret ...` pipeline's RESOLVED
 destination (following `$(SECRET_APPLY)` back to its definition, so the
@@ -147,7 +152,6 @@ def working_tree() -> Path:
 def test_every_secret_write_is_server_side(working_tree: Path) -> None:
     """No `kubectl create secret | kubectl apply` pipeline writes client-side."""
     destinations = secret_apply_destinations(working_tree)
-    print(f"[secrets server-side] {len(destinations)} Secret pipeline(s): {destinations}")
     assert destinations, "found no `create secret` pipeline at all — update this gate's parser"
     offenders = [d for d in destinations if "--server-side" not in d]
     assert offenders == [], (

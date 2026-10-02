@@ -30,12 +30,16 @@ ARGOCD_REPO ?= ../argocd
 # a full copy of the object's data — for a Secret, that is the cleartext
 # payload sitting in the cluster a second time (ledger 1225). Server-side
 # apply tracks ownership per field manager instead and writes no such
-# annotation. `--force-conflicts` is required: every Secret this Makefile
-# creates already exists on a bootstrapped cluster, applied client-side
-# before this change, so its fields are all owned by the
-# `kubectl-client-side-apply` manager. The first server-side apply after
-# this switch reclaims those fields; without `--force-conflicts` it would
-# 409 instead.
+# annotation. Every Secret this Makefile creates already exists on a
+# bootstrapped cluster, applied client-side before this change, so its
+# fields are already owned by the `kubectl-client-side-apply` manager — but
+# that alone does NOT need `--force-conflicts`: re-applying the SAME value
+# server-side makes `yadgar-deploy` a co-owner with no conflict (measured
+# against a live `iam-keys` Secret, 2026-10-02). `--force-conflicts` is
+# required for the ROTATION case this target's own comment above already
+# documents as intended behaviour: a CHANGED value 409s against the field
+# `kubectl-client-side-apply` still owns, and `--force-conflicts` is what
+# lets the rotation win.
 SECRET_APPLY := kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -
 
 # THE THREE SECRETS GITOPS CANNOT CARRY, loaded before anything syncs.
