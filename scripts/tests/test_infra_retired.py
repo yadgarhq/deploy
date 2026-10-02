@@ -201,8 +201,11 @@ def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path) -> None:
     makefile = tree / "Makefile"
     text = makefile.read_text()
     # Re-insert the line under `bootstrap:`, the same spot it was deleted from.
+    # `kubectl(?: --context \S+)?` tolerates the `--context $(KUBE_CONTEXT)`
+    # pin every kubectl in this target now carries (ledger 1228 follow-up) —
+    # the anchor is the ARGOCD_REPO apply, not the exact flags beside it.
     mutated = re.sub(
-        r"(\n\tkubectl apply -f \$\(ARGOCD_REPO\)/projects/root\.yaml\n)",
+        r"(\n\tkubectl(?: --context \S+)? apply -f \$\(ARGOCD_REPO\)/projects/root\.yaml\n)",
         r"\1\t" + APPLY_INFRA_APPS + "\n",
         text,
         count=1,

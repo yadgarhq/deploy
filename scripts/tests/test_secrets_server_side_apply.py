@@ -184,9 +184,13 @@ def non_secret_apply_destinations(tree: Path) -> list[str]:
     for line in _code_lines(text):
         if "create secret" in line:
             continue
-        if "|" in line and re.search(r"kubectl\s+apply\b", line.rsplit("|", 1)[1]):
+        # `kubectl(?:\s+--context\s+\S+)?\s+apply\b` tolerates the
+        # `--context $(KUBE_CONTEXT)` pin every kubectl invocation in
+        # `secrets`/`bootstrap` now carries (ledger 1228 follow-up) — this
+        # gate is about the DESTINATION'S apply mode, not the flags beside it.
+        if "|" in line and re.search(r"kubectl(?:\s+--context\s+\S+)?\s+apply\b", line.rsplit("|", 1)[1]):
             destinations.append(line.rsplit("|", 1)[1].strip())
-        elif re.search(r"kubectl\s+apply\b", line):
+        elif re.search(r"kubectl(?:\s+--context\s+\S+)?\s+apply\b", line):
             destinations.append(line.strip())
     return destinations
 
