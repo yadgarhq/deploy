@@ -25,9 +25,10 @@ ARGOCD_REPO ?= ../argocd
 # whatever `kubectl config current-context` happens to read, because none of
 # these commands refuses on a context mismatch: a Secret meant for
 # `kind-yadgar` applies just as quietly against whatever cluster the
-# operator's shell was last pointed at. `?=` rather than `:=` so a caller
-# targeting a different cluster overrides it without editing this file.
-KUBE_CONTEXT ?= kind-yadgar
+# operator's shell was last pointed at. `:=` so an exported shell variable
+# cannot retarget it; a caller targeting a different cluster says so on the
+# command line: `make KUBE_CONTEXT=<ctx> secrets`.
+KUBE_CONTEXT := kind-yadgar
 
 .PHONY: bootstrap secrets status ui password sync
 
@@ -152,7 +153,7 @@ bootstrap: secrets ## Install Argo CD into the running cluster, then hand contro
 		exit 1; }
 	helm repo add argo https://argoproj.github.io/argo-helm >/dev/null
 	helm repo update >/dev/null
-	helm upgrade --install argocd argo/argo-cd \
+	helm --kube-context $(KUBE_CONTEXT) upgrade --install argocd argo/argo-cd \
 		--version $(ARGOCD_CHART_VERSION) \
 		--namespace argocd --create-namespace \
 		--set configs.params."server\.insecure"=true \
@@ -185,13 +186,13 @@ status:
 ## by the nix unit that creates the cluster.
 
 ui: ## http://localhost:8081 — admin / `make password`
-	kubectl -n argocd port-forward svc/argocd-server 8081:80
+	kubectl --context $(KUBE_CONTEXT) -n argocd port-forward svc/argocd-server 8081:80
 
 password:
-	@kubectl -n argocd get secret argocd-initial-admin-secret \
+	@kubectl --context $(KUBE_CONTEXT) -n argocd get secret argocd-initial-admin-secret \
 		-o jsonpath='{.data.password}' | base64 -d; echo
 
 sync: ## Force a refresh without waiting for the reconciliation interval.
 	@test -n "$(APP)" || (echo "usage: make sync APP=<application-name>"; exit 1)
-	kubectl -n argocd annotate application $(APP) \
+	kubectl --context $(KUBE_CONTEXT) -n argocd annotate application $(APP) \
 		argocd.argoproj.io/refresh=hard --overwrite

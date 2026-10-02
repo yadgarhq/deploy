@@ -27,6 +27,9 @@ it against a cluster that already holds them changes nothing. The sections below
 remain the authority on what those Secrets ARE and where they come from; they
 are no longer a checklist to remember on a recreate.
 
+`make secrets`/`make bootstrap` target `kind-yadgar`; override with
+`make KUBE_CONTEXT=<ctx> secrets` (or `bootstrap`) for a different cluster.
+
 **Why that changed.** On 2026-09-05 a recreate came back with neither Secret and
 the two failures did not look alike. The CA announces itself — the preflight Job
 refuses, names the Secret and prints the command. `iam-keys` does not: both
@@ -141,12 +144,13 @@ cannot update one, which is what makes a resync safe; the same limit means it
 cannot rotate one either. A rotation is:
 
 ```bash
-umask 077; printf %s "$(openssl rand -base64 33)" > pw
+d=$(mktemp -d)
+( umask 077; printf %s "$(openssl rand -base64 33)" > "$d/pw" )
 kubectl --context kind-yadgar -n yadgar create secret generic valkey-password \
-  --from-file=password=pw \
+  --from-file=password="$d/pw" \
   --dry-run=client -o yaml | kubectl --context kind-yadgar apply --server-side \
   --field-manager=yadgar-deploy --force-conflicts -f -
-shred -u pw
+shred -u "$d/pw"; rmdir "$d"
 ```
 
 and then rolling **both** Deployments. The next sync sees the Secret present,
@@ -1726,10 +1730,10 @@ make bootstrap   # runs secrets first
 ```
 
 It is idempotent the same way the other two are — `--dry-run=client -o yaml |
-kubectl apply --server-side --field-manager=yadgar-deploy --force-conflicts -f -`,
-the server-side form deploy#82 (`0e33e2d`) adopted, matching the Makefile's
-`$(SECRET_APPLY)` — so re-running it on a cluster that already has the Secret
-is a no-op rather than an error.
+kubectl --context $(KUBE_CONTEXT) apply --server-side --field-manager=yadgar-deploy
+--force-conflicts -f -`, the server-side form deploy#82 (`0e33e2d`) adopted, matching
+the Makefile's `$(SECRET_APPLY)` — so re-running it on a cluster that already has the
+Secret is a no-op rather than an error.
 
 **"No-op" holds only while the 1Password copy is unchanged.** If the document
 holds a DIFFERENT key, this is a rotation rather than a no-op: `--force-conflicts`

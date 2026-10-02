@@ -96,17 +96,25 @@ def infra_application_names(tree: Path) -> list[str]:
     ]
 
 
+_APPLY_INFRA_APPS_RE = re.compile(
+    r"kubectl(?:\s+--context(?:=|\s+)\S+)?\s+apply\s+-f\s+infra/apps\.yaml\b"
+)
+
+
 def makefile_applies_infra_apps(tree: Path) -> bool:
     """Whether any Makefile target still runs `kubectl apply -f infra/apps.yaml`.
 
-    A substring search, not a target-scoped parse: the failure this gate
-    exists for is the LINE coming back under a renamed or different target,
-    not only under `bootstrap`.
+    A regex, not a plain substring search — pinned or not, the failure this
+    gate exists for is the LINE coming back under a renamed or different
+    target, not only under `bootstrap`, and not only in its original
+    unpinned form. `(?:\\s+--context(?:=|\\s+)\\S+)?` tolerates the
+    `--context $(KUBE_CONTEXT)` pin every kubectl in this Makefile now
+    carries (ledger 1228 follow-up) landing between `kubectl` and `apply`.
     """
     makefile = tree / "Makefile"
     if not makefile.is_file():
         return False
-    return APPLY_INFRA_APPS in makefile.read_text()
+    return bool(_APPLY_INFRA_APPS_RE.search(makefile.read_text()))
 
 
 def a_copy_of_the_tree(tmp_path: Path) -> Path:
@@ -195,8 +203,24 @@ def test_a_restored_application_as_json_reddens(tmp_path: Path) -> None:
     assert infra_application_names(tree) == ["yadgar"]
 
 
-def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path) -> None:
-    """Mutation check: restore the Makefile's apply line; the gate catches it."""
+PINNED_APPLY_INFRA_APPS = "kubectl --context $(KUBE_CONTEXT) apply -f infra/apps.yaml"
+
+
+@pytest.mark.parametrize(
+    "restored_line",
+    [APPLY_INFRA_APPS, PINNED_APPLY_INFRA_APPS],
+    ids=["unpinned", "pinned"],
+)
+def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path, restored_line: str) -> None:
+    """Mutation check: restore the Makefile's apply line, pinned or not; the gate catches it.
+
+    `APPLY_INFRA_APPS` is a literal substring, so a restoration that carries
+    the `--context $(KUBE_CONTEXT)` pin every kubectl in this Makefile now
+    gets (ledger 1228 follow-up) is NOT a substring match even though it is
+    exactly the hazard this gate exists to catch — a fresh `make bootstrap`
+    would still recreate the `infra` Application M4 deleted by hand, just
+    pointed at a pinned context instead of the ambient one.
+    """
     tree = a_copy_of_the_tree(tmp_path)
     makefile = tree / "Makefile"
     text = makefile.read_text()
@@ -206,7 +230,7 @@ def test_a_restored_bootstrap_apply_line_reddens(tmp_path: Path) -> None:
     # the anchor is the ARGOCD_REPO apply, not the exact flags beside it.
     mutated = re.sub(
         r"(\n\tkubectl(?: --context \S+)? apply -f \$\(ARGOCD_REPO\)/projects/root\.yaml\n)",
-        r"\1\t" + APPLY_INFRA_APPS + "\n",
+        r"\1\t" + restored_line + "\n",
         text,
         count=1,
     )
