@@ -177,8 +177,8 @@ bootstrap: secrets ## Install Argo CD into the running cluster, then hand contro
 status:
 	@kubectl config current-context 2>/dev/null | grep -q kind-yadgar \
 		&& echo "context: kind-yadgar" || echo "context: NOT kind-yadgar"
-	@kubectl get applications -n argocd 2>/dev/null || echo "argocd not installed yet"
-	@echo "--- nodes ---"; kubectl get nodes -o wide 2>/dev/null || echo "cluster unreachable"
+	@kubectl --context $(KUBE_CONTEXT) get applications -n argocd 2>/dev/null || echo "argocd not installed yet"
+	@echo "--- nodes ---"; kubectl --context $(KUBE_CONTEXT) get nodes -o wide 2>/dev/null || echo "cluster unreachable"
 
 ## No argocd CLI anywhere in this file, deliberately. The Argo server runs in
 ## the cluster; the CLI is an optional client and kubectl on the CRDs does the

@@ -23,15 +23,22 @@ environment at all, so only a COMMAND-LINE override
 (`make KUBE_CONTEXT=<ctx> secrets`, which Make always lets win over any
 in-file assignment) can retarget it — an exported shell variable cannot.
 
-THE GATE: every logical `kubectl`/`helm` invocation inside the five pinned
+THE GATE: every logical `kubectl`/`helm` invocation inside the six pinned
 targets' recipe bodies must carry its context flag, and the gate resolves
 `$(SECRET_APPLY)` back to its own definition first — a bare
 `$(SECRET_APPLY)` token carries no literal `kubectl` for the naive per-line
 scan to see, so dropping the flag from `SECRET_APPLY`'s definition alone
-would otherwise pass unnoticed. Scoped to the five named targets
-deliberately — `status` reads the AMBIENT context ON PURPOSE (it prints
-whether it is `kind-yadgar`), and widening this gate to the whole file would
-make `status` itself a false positive.
+would otherwise pass unnoticed.
+
+`status` IS IN SCOPE, WITH ONE DELIBERATE EXCEPTION. Its `kubectl get
+applications`/`kubectl get nodes` calls read Secret-adjacent cluster state
+exactly like the other five targets' calls do, and are pinned the same way.
+Its FIRST line, `kubectl config current-context`, is not and must not be —
+that line's entire purpose is to report the AMBIENT context, so pinning it
+would make `status` unable to ever print "context: NOT kind-yadgar". `config`
+is exempt the same way `helm repo add` is: it is a kubectl subcommand that
+touches no cluster at all (it only reads the local kubeconfig file), so it is
+not a context-sensitive invocation regardless of which target it sits in.
 """
 
 from __future__ import annotations
@@ -47,7 +54,13 @@ import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
-PINNED_TARGETS = ("secrets", "bootstrap", "ui", "password", "sync")
+PINNED_TARGETS = ("secrets", "bootstrap", "ui", "password", "sync", "status")
+
+# kubectl subcommands that touch no cluster at all — the only way a
+# `kubectl` segment is exempt from carrying `--context`. `config` reads the
+# local kubeconfig file; `status`'s first line exists ONLY to report that
+# file's current context, so pinning it would defeat the target's purpose.
+_KUBECTL_LOCAL_SUBCOMMANDS = frozenset({"config"})
 
 # Shared with test_secrets_server_side_apply.py's own constant — both read
 # the same Makefile variable name.
@@ -109,23 +122,91 @@ def _target_bodies(text: str, names: tuple[str, ...]) -> list[str]:
     return collected
 
 
-# Each entry: the binary's own word-boundary pattern, and the flag its
-# invocations must carry. Order matters only for the error message; the
-# segment split below finds BOTH binaries in one pass.
-#
-# `helm` ALONE is too wide: `helm repo add`/`helm repo update` manage the
-# local repo cache file and touch no cluster, so `--kube-context` on them is
-# meaningless and would be a false positive. The lookahead scopes `helm` in
-# only when followed (optionally through its own `--kube-context` flag, so a
-# ALREADY-pinned line still matches its start) by a subcommand that actually
-# talks to a cluster — `upgrade`/`install`, the two this Makefile runs.
+# `kubectl` needs `--context`, `helm` needs `--kube-context`. `helm` is
+# always a candidate at the match stage; whether a given invocation actually
+# needs the flag is decided by `_helm_is_local_only` below, INVERTED: every
+# `helm` segment needs `--kube-context` UNLESS its subcommand is proven
+# local-only. A subcommand this list has never heard of is NOT exempt —
+# the default is "needs the flag", not "assume it's safe".
 _BINARY_FLAGS = {
     "kubectl": "--context",
     "helm": "--kube-context",
 }
-_INVOCATION_RE = re.compile(
-    r"\b(kubectl|helm(?=(?:\s+--kube-context\s+\S+)?\s+(?:upgrade|install)\b))\b"
+_INVOCATION_RE = re.compile(r"\b(kubectl|helm)\b")
+
+# helm subcommands that touch no cluster at all — the only way a `helm`
+# segment is exempt from carrying `--kube-context`.
+_HELM_LOCAL_SUBCOMMANDS = frozenset(
+    {
+        "repo",
+        "search",
+        "show",
+        "template",
+        "version",
+        "plugin",
+        "env",
+        "dependency",
+        "package",
+        "lint",
+        "completion",
+        "pull",
+        "create",
+        "verify",
+    }
 )
+
+
+def _first_subcommand(segment_after_binary: str) -> str | None:
+    """The first non-flag token after the binary, skipping recognised flags AND their values.
+
+    `helm --namespace argocd upgrade ...` must read `upgrade` as the
+    subcommand, not `argocd` (the flag's value) or `--namespace` itself — a
+    flag taking a SEPARATE-token value is the common case global flags use
+    (`--namespace`, `--kube-context`, `--kubeconfig`, `--repo`, `--context`,
+    and any other `--flag value` pair), so a bare "skip tokens starting with
+    -" would stop at `--namespace` and then read its value as the subcommand
+    instead. A `--flag=value` form is self-contained and only costs one
+    token.
+    """
+    tokens = segment_after_binary.split()
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token.startswith("-"):
+            if "=" in token:
+                i += 1
+                continue
+            # Space-separated `--flag value`: consume the value too, unless
+            # the next token is itself another flag (a bare boolean flag).
+            if i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+                i += 2
+            else:
+                i += 1
+            continue
+        return token
+    return None
+
+
+def _helm_is_local_only(segment: str) -> bool:
+    """Whether a `helm ...` segment's subcommand is in the local-only set.
+
+    Unknown or absent subcommand -> NOT local-only (the inverted default:
+    prove safety, do not assume it).
+    """
+    after = segment[segment.index("helm") + len("helm") :]
+    subcommand = _first_subcommand(after)
+    return subcommand in _HELM_LOCAL_SUBCOMMANDS
+
+
+def _kubectl_is_local_only(segment: str) -> bool:
+    """Whether a `kubectl ...` segment's subcommand is in the local-only set.
+
+    Unlike helm (mostly local), kubectl is mostly cluster-touching — `config`
+    is the one subcommand this Makefile actually uses that is not.
+    """
+    after = segment[segment.index("kubectl") + len("kubectl") :]
+    subcommand = _first_subcommand(after)
+    return subcommand in _KUBECTL_LOCAL_SUBCOMMANDS
 
 
 def _expand_secret_apply(line: str, tree: Path) -> str:
@@ -146,6 +227,29 @@ def _expand_secret_apply(line: str, tree: Path) -> str:
     return line.replace(f"$({SECRET_APPLY_VAR})", value)
 
 
+_COMMAND_START_TOKENS = ("|", "$(", "`", ";", "&&", "||", "(")
+
+
+def _starts_a_command(line: str, match_start: int) -> bool:
+    """Whether `match_start` begins a new command rather than sitting mid-token.
+
+    A bare `\\bhelm\\b` also matches inside an unrelated token at a word
+    boundary — the literal URL `https://argoproj.github.io/argo-helm` ends in
+    `helm` right after a `-`, which is non-word, so `\\b` fires there too.
+
+    Make's own recipe-prefix characters (`@` silences echo, `-` ignores a
+    non-zero exit) sit between the leading tab and the real command — a line
+    reading `\\t@kubectl ...` measured as NOT starting a command without this,
+    because `@` is not whitespace and matches none of `_COMMAND_START_TOKENS`,
+    so `status`'s two `@`-prefixed lines passed through unseen entirely
+    rather than being flagged for the missing `--context` they actually had.
+    """
+    before = line[:match_start].rstrip()
+    if before.strip(" \t@-") == "":
+        return True
+    return any(before.endswith(tok) for tok in _COMMAND_START_TOKENS)
+
+
 def invocations_missing_context(tree: Path) -> list[str]:
     """Every `kubectl`/`helm` invocation in the five pinned targets with no context flag.
 
@@ -159,12 +263,20 @@ def invocations_missing_context(tree: Path) -> list[str]:
     offenders = []
     for raw_line in _target_bodies(text, PINNED_TARGETS):
         line = _expand_secret_apply(raw_line, tree)
-        starts = [(m.start(), m.group(1)) for m in _INVOCATION_RE.finditer(line)]
+        starts = [
+            (m.start(), m.group(1))
+            for m in _INVOCATION_RE.finditer(line)
+            if _starts_a_command(line, m.start())
+        ]
         if not starts:
             continue
         for i, (start, binary) in enumerate(starts):
             end = starts[i + 1][0] if i + 1 < len(starts) else len(line)
             segment = line[start:end]
+            if binary == "helm" and _helm_is_local_only(segment):
+                continue
+            if binary == "kubectl" and _kubectl_is_local_only(segment):
+                continue
             if _BINARY_FLAGS[binary] not in segment:
                 offenders.append(segment.strip())
     return offenders
@@ -253,6 +365,49 @@ def test_a_dropped_secret_apply_context_reddens(tmp_path: Path) -> None:
         "dropping --context from SECRET_APPLY's own definition did not redden the "
         "gate — a bare $(SECRET_APPLY) token must still resolve to this check"
     )
+
+
+def _minimal_tree_with_bootstrap_line(tmp_path: Path, extra_line: str) -> Path:
+    """A throwaway tree whose `bootstrap:` target is just `extra_line`.
+
+    Isolates the helm-subcommand classifier from the real Makefile's
+    content, so a red case tests exactly the one line it names.
+    """
+    tree = tmp_path / "deploy"
+    tree.mkdir()
+    (tree / "Makefile").write_text(f"KUBE_CONTEXT := kind-yadgar\n\nbootstrap:\n\t{extra_line}\n")
+    return tree
+
+
+def test_helm_flag_with_separate_value_does_not_hide_the_subcommand(tmp_path: Path) -> None:
+    """`helm --namespace argocd upgrade ...`: `argocd` is the flag's VALUE, not the subcommand.
+
+    A classifier that stops at the first non-`-`-prefixed token would read
+    `argocd` (the `--namespace` value) as the subcommand, find it in neither
+    the local nor any other known set, and — under the inverted default —
+    still redden correctly for the WRONG reason. This pins the right reason:
+    the subcommand is `upgrade`, which is unambiguously not local-only.
+    """
+    tree = _minimal_tree_with_bootstrap_line(
+        tmp_path, "helm --namespace argocd upgrade --install argocd argo/argo-cd"
+    )
+    offenders = invocations_missing_context(tree)
+    assert offenders, "an unpinned `helm --namespace argocd upgrade ...` should have reddened"
+    assert "upgrade" in offenders[0], offenders
+
+
+def test_unpinned_helm_uninstall_reddens(tmp_path: Path) -> None:
+    """`helm uninstall` is not in the local-only set — it deletes a release from a cluster."""
+    tree = _minimal_tree_with_bootstrap_line(tmp_path, "helm uninstall argocd -n argocd")
+    offenders = invocations_missing_context(tree)
+    assert offenders, "an unpinned `helm uninstall` should have reddened"
+
+
+def test_unpinned_helm_rollback_reddens(tmp_path: Path) -> None:
+    """`helm rollback` is not in the local-only set — it mutates a release in a cluster."""
+    tree = _minimal_tree_with_bootstrap_line(tmp_path, "helm rollback argocd 1 -n argocd")
+    offenders = invocations_missing_context(tree)
+    assert offenders, "an unpinned `helm rollback` should have reddened"
 
 
 def test_kube_context_is_immediate_not_conditional(working_tree: Path) -> None:
